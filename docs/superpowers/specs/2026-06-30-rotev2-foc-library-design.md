@@ -24,6 +24,8 @@ center-aligned PWM, timed ADC sampling, and dual-core scheduling.
 | ωe source | Differentiate commanded electrical angle + light LPF | Keeps `motorWrite(theta, current)` API exactly as PRD specifies. |
 | Current sensing | INA186A3 (**100 V/V**), 15 mΩ shunt, REF 1.65 V → `V=1.65+1.5·I`, range ≈ ±1.1 A | Verified A3 = 100 V/V from TI datasheet. Current command clamped to ±1.1 A. |
 | ADC oversampling | `ADC_OVERSAMPLE` default 4× per channel, burst centered on PWM midpoint | Rejects noise / boosts resolution while staying inside the center-aligned window (~16 µs burst). |
+| Modulation | Direct αβ phase-voltage application via PH/EN (NOT SVPWM — that's 3-phase BLDC) | 2-phase stepper with two H-bridges; inverse-park voltages applied per phase. |
+| LED polarity | Active-low (PWM on cathodes): pin high = off, pin low = on | Confirmed against board. |
 
 ## Hardware Reference
 
@@ -56,8 +58,9 @@ L = 3.5 mH, rated 1.0 A.
 
 **Buttons:** active-high, require internal pull-downs.
 
-**RGB LED:** PWM on GPIO 8/9/14. Polarity behind `LED_ACTIVE_HIGH` (assumed
-common-cathode; confirm against board).
+**RGB LED:** PWM on GPIO 8/9/14. **Active-low** — the PWM pins drive the LED
+cathodes, so pin high = off, pin low = on. `LED_ACTIVE_HIGH = false`; a brightness
+value of 255 = full on = pin held low (duty inverted internally).
 
 ## Architecture
 
@@ -99,10 +102,12 @@ rotev2/
 - `TOP = f_sys / (2 · 24000 · div)` (e.g. 3125 @150 MHz) → ~11–12-bit duty.
 - One slice wrap IRQ = master 24 kHz tick on core1.
 
-### Modulation (2-phase "SVPWM")
-Two independent H-bridges → inverse-park yields the two phase voltages `Vα` (phase A),
-`Vβ` (phase B) directly (no 3-phase sectors). Each applied as `PH = sign(V)`,
-`EN duty = |V|/Vbus`. Open-loop phase current traces two 90°-shifted sine waves.
+### Modulation (2-phase, direct αβ — NOT SVPWM)
+SVPWM is a 3-phase BLDC technique and does not apply here. This is a 2-phase stepper
+with two independent H-bridges: inverse-park yields the two phase voltages `Vα`
+(phase A), `Vβ` (phase B) directly, and each is applied as a sinusoidal bipolar phase
+voltage via `PH = sign(V)`, `EN duty = |V|/Vbus`. Open-loop phase current traces two
+90°-shifted sine waves.
 
 ### ADC sampling
 - Single SAR ADC, round-robin over the **active motor's two channels** only.
@@ -168,11 +173,10 @@ path). Pure math helpers (park/inverse-park, scaling, ωe estimate) factored to 
 host-testable for optional lightweight native tests.
 
 ## Open Assumptions to Confirm on Hardware
-- ADC `Vref` = 3.3 V (board-dependent).
-- LED polarity = common-cathode (`LED_ACTIVE_HIGH`).
-- "SVPWM" interpreted as direct αβ phase-voltage application via PH/EN (not 3-phase
-  space-vector sectors).
 - Overclock target (~200 MHz) stability.
+
+**Resolved:** ADC `Vref` = 3.3 V (confirmed); LED active-low with PWM on cathodes
+(confirmed); modulation is direct αβ phase-voltage application, not SVPWM (confirmed).
 
 ## Workflow (per CLAUDE.md)
 Feature branch, pre-feature tag, commit spec, per-phase validation against ground
