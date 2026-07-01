@@ -1,0 +1,11 @@
+{
+  "name": "RotEv2",
+  "version": "0.1.0",
+  "description": "Dual-core open-loop-position / closed-loop-current stepper FOC for the Tektite RotEv2 (RP2354).",
+  "keywords": "foc, stepper, rp2350, rp2354, motor, control",
+  "repository": { "type": "git", "url": "https://github.com/Nv7-Github/rotev2.git" },
+  "frameworks": "arduino",
+  "platforms": "raspberrypi",
+  "headers": "rotev.h",
+  "export": { "exclude": ["bringup", "docs", "test"] }
+}
