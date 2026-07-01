@@ -1,6 +1,7 @@
 #include <unity.h>
 #include <cmath>
 #include "foc_math.h"
+#include "constants.h"
 using namespace rotev;
 
 void setUp() {} void tearDown() {}
@@ -51,6 +52,33 @@ void test_pi_reset_clears_integrator() {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, s.integ);
 }
 
+void test_electrical_angle_scales_by_pole_pairs() {
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 50.0f, electricalAngle(1.0f));
+}
+void test_omega_estimator_constant_velocity() {
+  OmegaEst s; omegaReset(s);
+  float dt = 1.0f/12000.0f, w = 0.0f;
+  float theta = 0.0f;
+  for (int i = 0; i < 500; ++i) { theta += 100.0f*dt; w = omegaStep(s, theta, dt, 0.05f); }
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, 100.0f, w); // converges toward 100 rad/s
+}
+void test_counts_to_amps_midscale_is_zero() {
+  // 1.65V -> counts = 1.65/3.3*4095 = 2047.5
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, countsToAmps(2048));
+}
+void test_counts_to_amps_one_amp() {
+  // V = 1.65 + 1.5 = 3.15 -> counts = 3.15/3.3*4095 = 3908.8
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, countsToAmps(3909));
+}
+void test_clamp_current_limits() {
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, 1.1f, clampCurrent(5.0f));
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, -1.1f, clampCurrent(-5.0f));
+}
+void test_led_duty_active_low() {
+  TEST_ASSERT_EQUAL_UINT16(0, ledDuty(255, 3125));     // full on -> pin low
+  TEST_ASSERT_EQUAL_UINT16(3125, ledDuty(0, 3125));    // off -> pin high
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_park_zero_angle_is_identity);
@@ -61,5 +89,11 @@ int main() {
   RUN_TEST(test_pi_output_clamped_to_limit);
   RUN_TEST(test_pi_antiwindup_stops_integrating_when_saturated);
   RUN_TEST(test_pi_reset_clears_integrator);
+  RUN_TEST(test_electrical_angle_scales_by_pole_pairs);
+  RUN_TEST(test_omega_estimator_constant_velocity);
+  RUN_TEST(test_counts_to_amps_midscale_is_zero);
+  RUN_TEST(test_counts_to_amps_one_amp);
+  RUN_TEST(test_clamp_current_limits);
+  RUN_TEST(test_led_duty_active_low);
   return UNITY_END();
 }
