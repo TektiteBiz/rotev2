@@ -28,10 +28,12 @@ static void phasePins(Motor m, uint32_t& enA, uint32_t& phA, uint32_t& enB, uint
 
 static void controlStep(Motor m) {
   Setpoint sp;
+  bool lag;
   uint32_t irq = spin_lock_blocking(s_lock);
   sp.theta_mech = s_sp[m].theta_mech;
   sp.iq_cmd     = s_sp[m].iq_cmd;
   sp.enabled    = s_sp[m].enabled;
+  lag           = s_lagcomp;
   spin_unlock(s_lock, irq);
 
   uint32_t enA,phA,enB,phB; phasePins(m, enA,phA,enB,phB);
@@ -51,7 +53,7 @@ static void controlStep(Motor m) {
   DQ dq = park(i, theta_e);                        // open-loop position assumption
   float uq = piStep(s_piq[m], sp.iq_cmd - dq.q, KP, KI, dt, VBUS_V);
   float ud = piStep(s_pid[m], 0.0f      - dq.d, KP, KI, dt, VBUS_V);
-  if (s_lagcomp) {
+  if (lag) {
     uq += we * PHASE_L * dq.d;   // +we*Ld*Id
     ud -= we * PHASE_L * dq.q;   // -we*Lq*Iq
   }
@@ -106,6 +108,10 @@ AB focTelemetry(Motor m) {
   return t;
 }
 
-void focSetLagComp(bool on) { s_lagcomp = on; }
+void focSetLagComp(bool on) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_lagcomp = on;
+  spin_unlock(s_lock, irq);
+}
 
 } // namespace rotev
