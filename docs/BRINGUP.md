@@ -51,8 +51,9 @@ All four `phase*` environments define `ENABLE_LOOP_TIMING`. This causes `src/deb
 oscilloscope probe to GPIO10 and trigger on it to measure the ISR duration.
 
 Expected characteristics:
-- Pulse period: ~41.6 µs (24 kHz ISR fires, alternating between motor 1 and motor 2, so each
-  motor is serviced at 12 kHz — one pulse per ISR call)
+- Pulse period: ~41.6 µs — the ISR fires at 24 kHz and GPIO10 pulses on every call. Each
+  motor is serviced on every other call (12 kHz per motor), but you will see one pulse per
+  41.6 µs on the scope, not one per 83.3 µs.
 - Pulse width: the time consumed by one `controlStep()` call, including ADC sampling and PWM
   update. With the default settings this should be well under 20 µs.
 
@@ -283,7 +284,7 @@ stays within budget throughout the acceleration profile.
 |---------|-------------|
 | D-axis current grows significantly at high speed | Confirm `setLagComp(true)` is in effect; check `PHASE_L` value in `src/constants.h` (0.0035 H) |
 | Motor stops short of or past 100 rotations | Profile is integrating `theta`; verify `delay` / `dt` accuracy in loop; check for ISR overruns that slow the loop |
-| Timing overrun at 300 RPM | `OVERSAMPLE` (drop to 2) or `SYSCLK` (raise, e.g. 200000 kHz); see `FLASH-TIMING` note |
+| Timing overrun at 300 RPM | `OVERSAMPLE` (drop to 2) or `SYSCLK` (raise the `set_sys_clock_khz` arg, e.g. 200000 = 200 MHz); see `FLASH-TIMING` note |
 | Oscillation or instability at high speed | `KP` / `KI` — the plant changes at high electrical frequency; lower gains slightly |
 | Hard stop / position error | `IMAX_A` saturating and not delivering enough torque; verify bus voltage and winding resistance |
 
@@ -428,7 +429,7 @@ the removal went too far — restore from git and retry.
 Once all verifications pass:
 
 ```
-git add -p                  # stage only intentional changes
+git add -p                  # interactive: opens a patch selector to stage only intentional changes
 git commit -m "feat: finalize foc-library after bringup"
 ```
 
