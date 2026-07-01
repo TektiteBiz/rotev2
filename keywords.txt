@@ -1,0 +1,20 @@
+##################################
+# Syntax Coloring Map for RotEv2 #
+##################################
+
+# Functions (KEYWORD2)
+begin	KEYWORD2
+motorEnable	KEYWORD2
+motorDisable	KEYWORD2
+motorWrite	KEYWORD2
+setLagComp	KEYWORD2
+ledColor	KEYWORD2
+buttonPressed	KEYWORD2
+motorCurrentA	KEYWORD2
+motorCurrentB	KEYWORD2
+
+# Constants / enum values (LITERAL1)
+MOTOR_1	LITERAL1
+MOTOR_2	LITERAL1
+BTN_STOP	LITERAL1
+BTN_GO	LITERAL1
