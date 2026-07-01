@@ -34,6 +34,8 @@ void motorWrite(float theta_rad, float amps, Motor m) {
   focSetpoint(m, theta_rad, amps, s_en[m]);
 }
 
+void setLagComp(bool on) { focSetLagComp(on); }
+
 void ledColor(uint8_t r, uint8_t g, uint8_t b) { ledSet(r, g, b); }
 bool buttonPressed(Button b) { return buttonRead(b); }
 float motorCurrentA(Motor m) { return focTelemetry(m).a; }
