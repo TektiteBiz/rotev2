@@ -26,7 +26,7 @@
 - **Bus voltage:** `VBUS_V = 12.0f`, isolated behind `inversePark(...)` so a future ADC bus read is a one-line change.
 - **Commit style:** commit after every green step. Never work on `main` — a feature branch + pre-feature tag is created before Task 1.
 - **Bringup edits are bounded:** during hardware bringup the operator changes ONLY values listed in the `docs/BRINGUP.md` Tunable Knobs table (Task 16) — no library logic is rewritten. Every tunable is a single named constant or one clearly-marked line.
-- **No vestigial code:** the shipped library must read as if written cleanly in one pass. Any exploratory/diagnostic/alternative code introduced while chasing a hardware result must be removed once the decision is settled — e.g., if `sinf`/`cosf` meets the timing budget, NO sin/cos LUT code exists anywhere (not commented-out, not `#if 0`, not an unused function); temporary probe logging is deleted; abandoned branches are removed. A path is either the chosen implementation or it is gone. `ENABLE_LOOP_TIMING` is the one intentional, documented compile-time seam and stays. This is enforced by the cleanup pass in Task 18.
+- **No vestigial code:** the shipped library must read as if written cleanly in one pass. Any exploratory/diagnostic/alternative code introduced while chasing a hardware result must be removed once the decision is settled — e.g., if `sinf`/`cosf` meets the timing budget, NO sin/cos LUT code exists anywhere (not commented-out, not `#if 0`, not an unused function); temporary probe logging is deleted; abandoned branches are removed. A path is either the chosen implementation or it is gone. `ENABLE_LOOP_TIMING` is the one intentional, documented compile-time seam and stays. Because this depends on bringup outcomes (which happen after all code is written, driven by the operator), it is enforced as the **Finalize** step in `docs/BRINGUP.md` (Task 16), NOT as an agent task — the agent-authored code already contains no LUT and no scaffolding by construction.
 
 ---
 
@@ -1451,11 +1451,21 @@ Content: the dual-core contract; how to select/flash an environment (`cd bringup
 
 - [ ] **Step 4: Write the "Final acceptance checklist"** — one checkbox per phase pass criterion, plus: native tests green (`pio test -e native`), all four envs compile, README bus map matches wiring.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Write the "Finalize the library (after all phases pass)" section**
+
+This is the operator's last step once bringup is done — it makes the tree read as a clean first-pass implementation and prepares it for publishing. Document it as an explicit checklist:
+- **Resolve the trig choice to exactly one path:** the shipped code uses `sinf`/`cosf`. If the `LOOP_TIMING_PIN` never showed an overrun (the expected case), nothing to do — no LUT was ever added. Only if you were forced to add a sin/cos LUT to meet timing, delete the `sinf`/`cosf` path so exactly one remains. Never keep both.
+- **Delete diagnostics you added:** remove any temporary `Serial.print`/probe code added to chase a result (beyond each phase sketch's intended telemetry); remove dead branches, `#if 0` blocks, and commented-out experiments.
+- **Revert any knob you changed for diagnosis but not for production**, or record the final value with a one-line comment saying why.
+- **Production build flag:** confirm consumers do not define `ENABLE_LOOP_TIMING` (it frees GPIO10/SPI1 SCK for the user). It stays only in the `bringup/` envs.
+- **Re-verify:** `pio test -e native` green and all four `phase*` envs still compile after edits.
+- **Finish the branch:** commit the finalized tree, then use `superpowers:finishing-a-development-branch` to merge/PR `feature/foc-library`.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/BRINGUP.md
-git commit -m "docs: BRINGUP.md operator step-through guide + tunable-knobs reference"
+git commit -m "docs: BRINGUP.md operator step-through, tunable knobs, finalize checklist"
 ```
 
 ---
@@ -1521,30 +1531,28 @@ git commit -m "docs: README with API, GPIO map, dual-core contract, motor/tuning
 
 ---
 
-### Task 18: Finish the branch
+### Task 18: Final verification & handoff (last agent task)
 
-- [ ] **Step 1: Cleanup pass — remove all vestigial code**
+This is the final agent task. Everything after it — hardware bringup, tuning, the
+Finalize cleanup, and finishing the branch — is operator-driven per `docs/BRINGUP.md`.
+This task only proves the written code is sound and hands off cleanly. It contains no
+step that depends on a hardware/bringup outcome. The agent-authored code already has no
+LUT and no scaffolding (see the No-vestigial-code constraint), so there is nothing to
+clean up here.
 
-Once every phase's tuning decisions are settled, sweep the whole tree so it reads as a clean first-pass implementation:
-- If `sinf`/`cosf` met the timing budget (confirmed via `LOOP_TIMING_PIN`), verify **no** sin/cos LUT code, table, or generator exists anywhere. If a LUT *was* required, then the plain `sinf`/`cosf` path must be gone instead — exactly one lives.
-- Delete any temporary probe/`Serial.print` diagnostics added while chasing a result that are not part of the phase sketches' intended output.
-- Remove dead branches, `#if 0` blocks, commented-out experiments, and any function/constant no longer referenced (grep for each `foc_math`/module symbol; drop unused ones).
-- Confirm the only intentional compile-time seam remaining is `ENABLE_LOOP_TIMING`; the `inversePark(...,vbus)` boundary stays as the documented future-ADC seam.
-- Re-run `pio test -e native` and recompile all four envs after the sweep to prove nothing removed was actually load-bearing.
-
-Commit: `git commit -am "refactor: remove bringup scaffolding; clean final implementation"`
-
-- [ ] **Step 2: Run the full native test suite once more**
+- [ ] **Step 1: Run the full native test suite**
 
 Run: `pio test -e native`
 Expected: PASS (all foc_math tests).
 
-- [ ] **Step 3: Confirm all four bringup environments compile**
+- [ ] **Step 2: Confirm all four bringup environments compile**
 
 Run: `cd bringup && pio run -e phase1 && pio run -e phase2 && pio run -e phase3 && pio run -e phase4`
 Expected: SUCCESS each.
 
-- [ ] **Step 4: Use `superpowers:finishing-a-development-branch`** to decide merge/PR/cleanup for `feature/foc-library`.
+- [ ] **Step 3: Confirm the handoff docs are complete**
+
+Verify `docs/BRINGUP.md` contains the per-phase step-through, the Tunable Knobs table, the Final acceptance checklist, and the Finalize section; and `README.md` documents the API, GPIO/bus map, and dual-core contract. State clearly to the user that the code is complete and the next actions (flash `phase1`→`phase4`, tune via the knobs table, run the Finalize checklist, then finish the branch) are theirs to perform on hardware following `docs/BRINGUP.md`.
 
 ---
 
@@ -1565,8 +1573,8 @@ Expected: SUCCESS each.
 - `LOOP_TIMING_PIN` GPIO10 bringup-only behind `ENABLE_LOOP_TIMING` → Task 7, enabled in all `phase*` envs (Task 12), used by operator in Task 16 ✓
 - Bringup project isolated, 4 phases as separate PlatformIO envs, all fully implemented up front → Tasks 12–15 ✓
 - README + docs/BRINGUP.md (operator step-through + tunable-knobs table) → Task 16 (BRINGUP), Task 17 (README) ✓
-- CLAUDE.md workflow (tag, branch, per-phase validation) → Task 0 (tag/branch), Task 16 (operator step-through validation), Task 18 (finish) ✓
-- No vestigial code / clean final state → Global Constraints + Task 18 Step 1 cleanup pass ✓ (LUT only exists if it replaced sinf/cosf, never alongside it)
+- CLAUDE.md workflow (tag, branch, per-phase validation) → Task 0 (tag/branch), Task 16 (operator step-through validation + Finalize + branch finish), Task 18 (pre-handoff code verification) ✓
+- No vestigial code / clean final state → Global Constraints + Task 16 Finalize step (operator, post-bringup) ✓; agent-authored code has no LUT/scaffolding by construction, so no post-bringup agent task is needed (none can run after bringup)
 
 **Placeholder scan:** No TBD/TODO; every code step has complete code; hardware-validation steps have explicit pass criteria. ✓
 
