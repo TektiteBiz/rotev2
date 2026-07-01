@@ -178,16 +178,24 @@ constexpr uint32_t PIN_LOOP_TIMING = 10; // SPI1 SCK; bringup only
 } // namespace rotev
 ```
 
-- [ ] **Step 6: Write Unity test skeleton `test/test_foc_math/test_main.cpp`**
+- [ ] **Step 6: Write Unity test `test/test_foc_math/test_main.cpp`**
+
+Asserts real derived constants (verifies the native toolchain AND that `constants.h` compiles under `platform = native`). This file is replaced by the `foc_math` tests in Task 1.
 
 ```cpp
 #include <unity.h>
+#include "constants.h"
+using namespace rotev;
 void setUp() {}
 void tearDown() {}
-void test_placeholder() { TEST_ASSERT_TRUE(true); }
+void test_derived_gains() {
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 3.5f, KP);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 3500.0f, KI);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1.5f, VOLTS_PER_AMP);
+}
 int main() {
   UNITY_BEGIN();
-  RUN_TEST(test_placeholder);
+  RUN_TEST(test_derived_gains);
   return UNITY_END();
 }
 ```
@@ -195,7 +203,7 @@ int main() {
 - [ ] **Step 7: Run native tests to verify the toolchain works**
 
 Run: `pio test -e native`
-Expected: PASS (1 test, `test_placeholder`).
+Expected: PASS (1 test, `test_derived_gains`).
 
 - [ ] **Step 8: Commit**
 
