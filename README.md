@@ -2,7 +2,7 @@
 
 PlatformIO/Arduino library for the **Tektite RotEv2** board (RP2354). Provides dual-core field-oriented control (FOC) for two independent 2-phase stepper motors, plus RGB LED and button I/O.
 
-- Open-loop position control (theta_rad → Park/Clarke → PWM)
+- Open-loop position control (theta_rad → inverse Park → PWM; no Clarke — phase currents are already in the αβ frame)
 - Closed-loop current control (PI regulators, pole-placement tuned)
 - Lag-compensation (cross-coupling decoupling, optional)
 - Active-high buttons, active-low RGB LED
@@ -19,7 +19,7 @@ platform     = https://github.com/maxgerhardt/platform-raspberrypi.git
 board        = generic_rp2350
 board_build.core = earlephilhower
 framework    = arduino
-lib_deps     = <path-or-registry-entry-for-rotev2>
+lib_deps     = https://github.com/Nv7-Github/rotev2.git
 build_flags  = -std=gnu++17
 ```
 
@@ -81,7 +81,7 @@ void motorWrite(float theta_rad, float amps, Motor m);
 
 - `motorEnable(m)` — releases nSLEEP and re-applies the last commanded setpoint. **Caveat:** the stored setpoint is the last value passed to `motorWrite()`, which defaults to 0 A at startup. To guarantee starting from rest, call `motorWrite(theta, 0.0f, m)` before `motorEnable(m)`.
 - `motorDisable(m)` — zeros the current command and asserts nSLEEP.
-- `motorWrite(theta_rad, amps, m)` — sets position angle (radians, any range) and d-axis current (q-axis target in amps). `amps` is clamped to ±1.1 A (sensor range).
+- `motorWrite(theta_rad, amps, m)` — sets the position angle (radians, any range) and the q-axis (torque) current command in amps. The d-axis current setpoint is held at 0. `amps` is clamped to ±1.1 A (sensor range).
 
 ### Lag Compensation
 
@@ -101,7 +101,7 @@ Defaults to disabled at startup.
 void ledColor(uint8_t r, uint8_t g, uint8_t b);
 ```
 
-Sets the RGB LED. The LED is **active-low**, driven by PWM. Values are 0–255 (0 = full brightness, 255 = off).
+Sets the RGB LED. The LED is **active-low**, driven by PWM. Values are 0–255 (255 = full brightness, 0 = off).
 
 ### Buttons
 
@@ -133,7 +133,7 @@ enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 
 | Signal | GPIO | Notes |
 |---|---|---|
-| ENA_2 | 0 | Motor 2 phase A enable (DRV8825) |
+| ENA_2 | 0 | Motor 2 phase A enable (DRV8874, PH/EN mode) |
 | PHA_2 | 1 | Motor 2 phase A direction |
 | ENB_2 | 2 | Motor 2 phase B enable |
 | PHB_2 | 3 | Motor 2 phase B direction |
