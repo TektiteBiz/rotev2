@@ -75,16 +75,16 @@ void test_clamp_current_limits() {
   TEST_ASSERT_FLOAT_WITHIN(1e-5, -1.1f, clampCurrent(-5.0f));
 }
 void test_led_duty_active_low() {
-  TEST_ASSERT_EQUAL_UINT16(0, ledDuty(255, 3125));     // full on -> pin low
-  TEST_ASSERT_EQUAL_UINT16(3125, ledDuty(0, 3125));    // off -> pin high
+  TEST_ASSERT_EQUAL_UINT16(0, ledDuty(255, 3124));     // full on -> pin low
+  TEST_ASSERT_EQUAL_UINT16(3124, ledDuty(0, 3124));    // off -> pin high
 }
 void test_omega_first_call_returns_zero() {
   OmegaEst s; omegaReset(s);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, omegaStep(s, 1.0f, 0.001f, 0.1f));
 }
 void test_led_duty_midpoint() {
-  // 128*3125/255 = 1568 (truncated); active-low duty = top - 1568
-  TEST_ASSERT_EQUAL_UINT16((uint16_t)(3125 - 1568), ledDuty(128, 3125));
+  // 128*3124/255 = 1568 (truncated); active-low duty = top - 1568
+  TEST_ASSERT_EQUAL_UINT16((uint16_t)(3124 - 1568), ledDuty(128, 3124));
 }
 
 int main() {
