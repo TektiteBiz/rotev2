@@ -4,7 +4,9 @@
 
 **Goal:** Build a published PlatformIO/Arduino library for the Tektite RotEv2 PCB (RP2354) implementing dual-core, closed-loop-current / open-loop-position FOC for two 2-phase steppers, plus RGB LED and button support, validated through a 4-phase hardware bringup.
 
-**Architecture:** Public free-function API in `namespace rotev` on core0; a real-time FOC control loop on core1 driven by a 24 kHz center-aligned PWM-wrap IRQ (alternating motors → 12 kHz each). Pure control math is isolated in a hardware-free `foc_math` unit (host-unit-tested with Unity); hardware modules use Pico SDK `<hardware/*.h>` headers and are validated on-target via bringup sketches.
+**Architecture:** Public free-function API in `namespace rotev` on core0; a real-time FOC control loop on core1 driven by a 24 kHz center-aligned PWM-wrap IRQ (alternating motors → 12 kHz each). Pure control math is isolated in a hardware-free `foc_math` unit (host-unit-tested with Unity); hardware modules use Pico SDK `<hardware/*.h>` headers.
+
+**Bringup model:** the entire library **and** all four bringup programs are fully implemented before any hardware step-through. Each bringup phase is a separate PlatformIO **environment** (`phase1`…`phase4`) sharing one `main.cpp`. The operator flashes each env in order (`pio run -e phase1 -t upload`) and, per `docs/BRINGUP.md`, only ever tweaks **small documented sections** (a fixed set of tunable constants — overclock, oversample, sample instant, current sign, LED polarity, PI gains) when hardware reality requires it. No new code is written during bringup.
 
 **Tech Stack:** C++17, earlephilhower arduino-pico core (RP2350/RP2354), Pico SDK (`hardware/pwm.h`, `hardware/adc.h`, `hardware/irq.h`, `hardware/clocks.h`, `pico/multicore.h`, `hardware/sync.h`), PlatformIO, Unity test framework (native env).
 
@@ -23,6 +25,7 @@
 - **LED polarity:** active-low (PWM drives cathodes): brightness 255 = full on = pin held low; duty inverted internally.
 - **Bus voltage:** `VBUS_V = 12.0f`, isolated behind `inversePark(...)` so a future ADC bus read is a one-line change.
 - **Commit style:** commit after every green step. Never work on `main` — a feature branch + pre-feature tag is created before Task 1.
+- **Bringup edits are bounded:** during hardware bringup the operator changes ONLY values listed in the `docs/BRINGUP.md` Tunable Knobs table (Task 16) — no library logic is rewritten. Every tunable is a single named constant or one clearly-marked line.
 
 ---
 
@@ -48,9 +51,9 @@ rotev2/
   examples/
     Basic/Basic.ino            # short published usage example
   bringup/
-    platformio.ini             # self-contained project; lib_deps = symlink://../..
-    src/main.cpp               # selects phase via build flag (-DPHASE=N)
-    phase1_hw.h  phase2_openloop.h  phase3_foc.h  phase4_full.h
+    platformio.ini             # self-contained project; 4 envs phase1..phase4 (each -DPHASE=N)
+    src/main.cpp               # selects the phase header via -DPHASE
+    phase1_hw.h  phase2_openloop.h  phase3_foc.h  phase4_full.h   # all fully implemented up front
   test/
     test_foc_math/test_main.cpp# Unity native unit tests for foc_math
   docs/PRD.md  docs/BRINGUP.md  docs/superpowers/...
@@ -1148,26 +1151,42 @@ git commit -m "feat: public rotev:: API surface"
 
 ---
 
-### Task 12: Bringup project scaffold + Phase 1 (basic hardware)
+### Task 12: Bringup project scaffold — 4 environments + Phase 1 sketch
 
 **Files:**
 - Create: `bringup/platformio.ini`, `bringup/src/main.cpp`, `bringup/phase1_hw.h`
-- Create/Modify: `docs/BRINGUP.md` (Phase 1 section)
 
 **Interfaces:**
 - Consumes: `rotev::begin/motorEnable/motorDisable/ledColor/buttonPressed/motorCurrentA/B`.
 
-- [ ] **Step 1: Write `bringup/platformio.ini`**
+This and Tasks 13–15 **create all four bringup programs up front** as pure code (compile-checked, not hardware-gated). The operator step-through and all pass/fail criteria live in `docs/BRINGUP.md` (Task 16).
+
+- [ ] **Step 1: Write `bringup/platformio.ini` (one env per phase)**
 
 ```ini
-[env:bringup]
+[common]
 platform = https://github.com/maxgerhardt/platform-raspberrypi.git
 board = generic_rp2350
 board_build.core = earlephilhower
 framework = arduino
 monitor_speed = 115200
-build_flags = -std=gnu++17 -DENABLE_LOOP_TIMING -DPHASE=1
 lib_deps = symlink://../
+
+[env:phase1]
+extends = common
+build_flags = -std=gnu++17 -DENABLE_LOOP_TIMING -DPHASE=1
+
+[env:phase2]
+extends = common
+build_flags = -std=gnu++17 -DENABLE_LOOP_TIMING -DPHASE=2
+
+[env:phase3]
+extends = common
+build_flags = -std=gnu++17 -DENABLE_LOOP_TIMING -DPHASE=3
+
+[env:phase4]
+extends = common
+build_flags = -std=gnu++17 -DENABLE_LOOP_TIMING -DPHASE=4
 ```
 
 - [ ] **Step 2: Write `bringup/src/main.cpp`**
@@ -1211,34 +1230,24 @@ void loop() {
 }
 ```
 
-- [ ] **Step 4: Build the bringup project**
+- [ ] **Step 4: Compile the Phase 1 environment**
 
-Run: `cd bringup && pio run -e bringup`
-Expected: SUCCESS — this is the first full compile of the library through a consumer. Fix any compile errors surfaced here in the relevant `src/` module, re-commit those fixes.
+Run: `cd bringup && pio run -e phase1`
+Expected: SUCCESS — this is the first full compile of the library through a consumer. Fix any compile errors in the relevant `src/` module and re-commit those fixes. (Operator flash/observe is deferred to `docs/BRINGUP.md`, Task 16.)
 
-- [ ] **Step 5: Flash and validate on hardware (document in BRINGUP.md)**
-
-Run: `pio run -e bringup -t upload && pio device monitor`
-Pass criteria (record in `docs/BRINGUP.md`): (a) all four current readings sit near 0 A with drivers idle (within a few mA of zero at the 1.65 V bias); (b) pressing GO turns LED green, STOP turns it red; (c) measure `nSLEEP_1/2` high with a meter after `motorEnable`; (d) with `ENABLE_LOOP_TIMING`, GPIO10 currently idle (ISR not yet ticking motion — expected).
-
-- [ ] **Step 6: Write `docs/BRINGUP.md` Phase 1 section**
-
-Document: wiring, how to select the phase (`-DPHASE=1`), the exact `pio` commands, the pass criteria above, and troubleshooting (reversed current sign → swap SOA/SOB interpretation; LED inverted → check `LED_ACTIVE_HIGH` assumption).
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add bringup/ docs/BRINGUP.md
-git commit -m "feat: bringup project + Phase 1 basic-hardware sketch and docs"
+git add bringup/platformio.ini bringup/src/main.cpp bringup/phase1_hw.h
+git commit -m "feat: bringup project with 4 envs + Phase 1 basic-hardware sketch"
 ```
 
 ---
 
-### Task 13: Bringup Phase 2 — open-loop SVPWM (60 RPM, 0.1 A)
+### Task 13: Bringup Phase 2 sketch — open-loop (60 RPM, 0.1 A)
 
 **Files:**
 - Create: `bringup/phase2_openloop.h`
-- Modify: `docs/BRINGUP.md` (Phase 2 section)
 
 **Interfaces:**
 - Consumes: `rotev` API. Open-loop = command a steadily advancing `theta` with a fixed small current setpoint; because PI drives measured→setpoint, a low current setpoint at a moving angle produces the open-loop sine currents.
@@ -1276,33 +1285,24 @@ void loop() {
 }
 ```
 
-- [ ] **Step 2: Build**
+- [ ] **Step 2: Compile the Phase 2 environment**
 
-Run: `cd bringup && pio run -e bringup -o build_flags="-std=gnu++17 -DENABLE_LOOP_TIMING -DPHASE=2"` *(or edit `-DPHASE=2` in `platformio.ini`)*
-Expected: SUCCESS.
+Run: `cd bringup && pio run -e phase2`
+Expected: SUCCESS. (Operator flash/observe + pass criteria are in `docs/BRINGUP.md`, Task 16.)
 
-- [ ] **Step 3: Flash + validate**
-
-Pass criteria (record in BRINGUP.md): (a) Serial Plotter shows two ~90°-shifted sine waves at ~50 Hz electrical (60 RPM × 50 pole pairs / 60 = 50 Hz); (b) amplitude ≈ 0.1 A; (c) scope on GPIO10 (`LOOP_TIMING_PIN`) shows a stable pulse every ~41.6 µs (24 kHz) and pulse width < ~20 µs (loop fits budget); (d) motor spins smoothly at ~60 RPM.
-
-- [ ] **Step 4: Write BRINGUP.md Phase 2 section**
-
-Document commands, expected plot (screenshot description), electrical-frequency math, timing-pin interpretation, and failure modes (jerky motion → check theta wrap/dt; flat current → check PH direction logic / nSLEEP).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add bringup/phase2_openloop.h docs/BRINGUP.md
-git commit -m "feat: bringup Phase 2 open-loop sine + docs"
+git add bringup/phase2_openloop.h
+git commit -m "feat: bringup Phase 2 open-loop sine sketch"
 ```
 
 ---
 
-### Task 14: Bringup Phase 3 — closed-loop FOC (no lag comp)
+### Task 14: Bringup Phase 3 sketch — closed-loop FOC (no lag comp)
 
 **Files:**
 - Create: `bringup/phase3_foc.h`
-- Modify: `docs/BRINGUP.md` (Phase 3 section)
 
 - [ ] **Step 1: Write `bringup/phase3_foc.h`**
 
@@ -1334,28 +1334,26 @@ void loop() {
 }
 ```
 
-`focSetLagComp` must be declared in `foc.h` and re-exported; add `void focSetLagComp(bool);` usage note to BRINGUP. (It is already public in `foc.h` from Task 10.)
+`focSetLagComp(bool)` is already public in `foc.h` from Task 10.
 
-- [ ] **Step 2: Build with `-DPHASE=3`, flash, validate**
+- [ ] **Step 2: Compile the Phase 3 environment**
 
-Pass criteria: (a) motor holds constant velocity under light load; (b) currents remain sinusoidal and track the 0.5 A envelope; (c) loop-timing pulse still < budget; (d) commanding a step in current shows fast, stable settling (no sustained oscillation → PI gains sane).
+Run: `cd bringup && pio run -e phase3`
+Expected: SUCCESS. (Operator flash/observe + pass criteria are in `docs/BRINGUP.md`, Task 16.)
 
-- [ ] **Step 3: Write BRINGUP.md Phase 3 section**, including how to run an S-curve by ramping `theta` velocity in the sketch, and pass/fail.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add bringup/phase3_foc.h docs/BRINGUP.md
-git commit -m "feat: bringup Phase 3 closed-loop FOC + docs"
+git add bringup/phase3_foc.h
+git commit -m "feat: bringup Phase 3 closed-loop FOC sketch"
 ```
 
 ---
 
-### Task 15: Bringup Phase 4 — full library (lag comp, S-curves to 100 rot / 300 RPM)
+### Task 15: Bringup Phase 4 sketch — full library (lag comp, S-curves to 100 rot / 300 RPM)
 
 **Files:**
 - Create: `bringup/phase4_full.h`
-- Modify: `docs/BRINGUP.md` (Phase 4 section)
 
 - [ ] **Step 1: Write `bringup/phase4_full.h`**
 
@@ -1398,22 +1396,70 @@ void loop() {
 }
 ```
 
-- [ ] **Step 2: Build `-DPHASE=4`, flash, validate**
+- [ ] **Step 2: Compile the Phase 4 environment**
 
-Pass criteria: (a) completes 100 rotations and stops on target; (b) sustains 300 RPM (= 250 Hz electrical) with sinusoidal currents; (c) with lag comp ON, Id stays near 0 at speed vs Phase 3 (verify by temporarily logging `park` d-axis — optional debug build); (d) loop-timing pulse width still < budget at 300 RPM.
+Run: `cd bringup && pio run -e phase4`
+Expected: SUCCESS. (Operator flash/observe + pass criteria are in `docs/BRINGUP.md`, Task 16.)
 
-- [ ] **Step 3: Write BRINGUP.md Phase 4 section** — full procedure, the lag-comp on/off comparison, 300 RPM electrical-frequency math (250 Hz), and final acceptance checklist.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add bringup/phase4_full.h docs/BRINGUP.md
+git add bringup/phase4_full.h
 git commit -m "feat: bringup Phase 4 full library with lag comp + S-curve"
 ```
 
 ---
 
-### Task 16: README, example sketch, keywords, final packaging
+### Task 16: `docs/BRINGUP.md` — the operator step-through guide
+
+**Files:**
+- Create: `docs/BRINGUP.md`
+
+**Interfaces:**
+- Consumes: the four `phase*` environments (Tasks 12–15) and the tunable constants in `src/constants.h` / `src/hw.cpp`.
+
+This is the document the operator follows to bring the board up. All code already exists; this guide tells them how to step through the environments and which small sections to change when hardware demands it. Write it as complete prose + tables (no placeholders).
+
+- [ ] **Step 1: Write the "How to use this guide" + prerequisites section**
+
+Content: the dual-core contract; how to select/flash an environment (`cd bringup && pio run -e phaseN -t upload`, then `pio device monitor` / Arduino Serial Plotter at 115200); how to scope `LOOP_TIMING_PIN` (GPIO10) against a phase EN pin and a current output; the golden rule — *if a phase misbehaves, only adjust a value listed in the Tunable Knobs table; do not rewrite library code.*
+
+- [ ] **Step 2: Write the per-phase step-through** (one section each). For each phase include: purpose, exact command, what to watch (Serial Plotter and scope), **pass criteria**, and **what to tweak on failure** (pointing into the Tunable Knobs table).
+
+  - **Phase 1 (`phase1`) — Basic HW.** Pass: four currents near 0 A at idle; GO→green, STOP→red; `nSLEEP_1/2` measure high after enable. Tweaks on failure: LED inverted → `LED-POL`; current sign/offset wrong → `ISENSE-SIGN`, `VREF`.
+  - **Phase 2 (`phase2`) — Open loop.** Pass: two ~90°-shifted sines at ~50 Hz electrical (60 RPM × 50 / 60), amplitude ≈ 0.1 A; `LOOP_TIMING_PIN` pulse every ~41.6 µs, width < ~20 µs; smooth 60 RPM. Tweaks: jerky → `PROFILE-DT`; no motion/flat current → `PH-DIR`, driver enable; timing pin too wide → `OVERSAMPLE`, `SYSCLK`.
+  - **Phase 3 (`phase3`) — Closed-loop FOC.** Pass: constant velocity holds; currents track the 0.5 A envelope; step response settles without sustained oscillation. Tweaks: oscillation/instability → `KP`,`KI`; sluggish → `BANDWIDTH`; sample-noise → `OVERSAMPLE`, `SAMPLE-INSTANT`.
+  - **Phase 4 (`phase4`) — Full library.** Pass: completes 100 rotations and stops on target; sustains 300 RPM (250 Hz electrical); with lag comp ON, d-axis current stays nearer 0 at speed than with it off; timing pulse still < budget. Tweaks: high-speed d-axis creep → confirm lag comp on, check `PHASE_L`; timing overrun at 300 RPM → `OVERSAMPLE`, `SYSCLK` (overclock).
+
+- [ ] **Step 3: Write the "Tunable Knobs" reference table** — the *only* things an operator edits during bringup:
+
+| ID | Knob | File / location | Default | When to change |
+|----|------|-----------------|---------|----------------|
+| `SYSCLK` | `set_sys_clock_khz(...)` | `src/hw.cpp` `hwInit()` | 150000 | Timing overrun at speed → raise (e.g. 200000) and re-verify stability |
+| `OVERSAMPLE` | `ADC_OVERSAMPLE` | `src/constants.h` | 4 | Timing pin too wide → drop to 2; noisy current → raise (watch budget) |
+| `SAMPLE-INSTANT` | burst offset in ISR | `src/foc.cpp` `pwmWrapISR`/`controlStep` | wrap-aligned | Current sampled on switching edge → shift sampling toward pulse center |
+| `KP` / `KI` | `KP`, `KI` | `src/constants.h` | 3.5 / 3500 | Oscillation → lower; sluggish tracking → raise (or adjust `BANDWIDTH`) |
+| `BANDWIDTH` | `BANDWIDTH` | `src/constants.h` | 1000 | Recompute kP/kI target loop response |
+| `IMAX` | `IMAX_A` | `src/constants.h` | 1.1 | Sensor rail / motor limit changes |
+| `VREF` | `ADC_VREF` | `src/constants.h` | 3.3 | Measured ADC reference differs |
+| `ISENSE-SIGN` | swap SOA/SOB or negate | `src/adc.cpp` `adcSampleMotor` | as wired | Current polarity reversed vs expectation |
+| `PH-DIR` | sign in `pwmSetPhase` | `src/pwm.cpp` | positive=PH high | Motor spins wrong way / phase inverted |
+| `LED-POL` | active-low invert | `src/foc_math.cpp` `ledDuty` | active-low | Board turns out common-anode/opposite |
+| `VBUS` | `VBUS_V` | `src/constants.h` | 12.0 | Different bus voltage (until ADC bus-sense added) |
+| `PROFILE-DT` | delay in phase sketch | `bringup/phase*_.h` | per sketch | Command update rate / smoothness |
+
+- [ ] **Step 4: Write the "Final acceptance checklist"** — one checkbox per phase pass criterion, plus: native tests green (`pio test -e native`), all four envs compile, README bus map matches wiring.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/BRINGUP.md
+git commit -m "docs: BRINGUP.md operator step-through guide + tunable-knobs reference"
+```
+
+---
+
+### Task 17: README, example sketch, keywords, final packaging
 
 **Files:**
 - Modify: `README.md`, `keywords.txt`
@@ -1460,9 +1506,9 @@ BTN_GO	LITERAL1
 
 Include, per spec: overview; **GPIO/bus map** (full table incl. SPI1 GPIO10–13, I2C0 GPIO16–17, both usable as plain GPIO); the three exposed functions (motor control, RGB LED, buttons) with signatures + examples; **dual-core contract** (library owns core1, no `setup1()/loop1()`); motor specs (14HS11-1004: 1.8°/step, R=3.5 Ω, L=3.5 mH); PI tuning (`kP=BW·L`, `kI=BW·R`, BW=1000 rad/s); lag-comp equations; current-sense range (±1.1 A) and clamp; the 12 V bus assumption + future-ADC note; a link to `docs/BRINGUP.md`.
 
-- [ ] **Step 4: Compile the example under the library env**
+- [ ] **Step 4: Compile the library through a bringup env**
 
-Run: `cd bringup && pio run -e bringup` (still builds the library cleanly)
+Run: `cd bringup && pio run -e phase1` (confirms the library still builds cleanly)
 Expected: SUCCESS.
 
 - [ ] **Step 5: Commit**
@@ -1474,16 +1520,16 @@ git commit -m "docs: README with API, GPIO map, dual-core contract, motor/tuning
 
 ---
 
-### Task 17: Finish the branch
+### Task 18: Finish the branch
 
 - [ ] **Step 1: Run the full native test suite once more**
 
 Run: `pio test -e native`
 Expected: PASS (all foc_math tests).
 
-- [ ] **Step 2: Confirm the bringup project builds all four phases**
+- [ ] **Step 2: Confirm all four bringup environments compile**
 
-Run for N in 1..4: `cd bringup && pio run -e bringup` with `-DPHASE=N`.
+Run: `cd bringup && pio run -e phase1 && pio run -e phase2 && pio run -e phase3 && pio run -e phase4`
 Expected: SUCCESS each.
 
 - [ ] **Step 3: Use `superpowers:finishing-a-development-branch`** to decide merge/PR/cleanup for `feature/foc-library`.
@@ -1494,7 +1540,7 @@ Expected: SUCCESS each.
 
 **Spec coverage:**
 - Framework (arduino-pico + Pico SDK internals) → Task 0, all firmware tasks ✓
-- Float + sinf/cosf → Task 1/`foc_math` ✓ (LUT fallback noted in spec; only if bringup fails timing — timing checked in Tasks 13–15 via `LOOP_TIMING_PIN`)
+- Float + sinf/cosf → Task 1/`foc_math` ✓ (LUT fallback noted in spec; only if bringup fails timing — operator checks `LOOP_TIMING_PIN` during the Task 16 step-through)
 - Dual-core (FOC core1 / user core0) → Task 10 ✓; README contract → Task 16 ✓
 - `rotev::` free-function API → Task 11 ✓
 - ωe by differentiating commanded theta + LPF → Task 3 (`omegaStep`), used in Task 10 ✓
@@ -1504,13 +1550,13 @@ Expected: SUCCESS each.
 - Park (open-loop position) / PI (kP=3.5,kI=3500) / lag comp / inverse-park with vbus boundary → Tasks 1–3, 10 ✓
 - LED active-low → Task 3 (`ledDuty`), Task 5 ✓
 - Buttons active-high pull-down debounced → Task 6 ✓
-- `LOOP_TIMING_PIN` GPIO10 bringup-only behind `ENABLE_LOOP_TIMING` → Task 7, used in Tasks 12–15 ✓
-- Bringup project isolated, 4 phases → Tasks 12–15 ✓
-- README + docs/BRINGUP.md → Tasks 12–16 ✓
-- CLAUDE.md workflow (tag, branch, per-phase validation) → Task 0 (tag/branch), Tasks 12–15 (validation), Task 17 (finish) ✓
+- `LOOP_TIMING_PIN` GPIO10 bringup-only behind `ENABLE_LOOP_TIMING` → Task 7, enabled in all `phase*` envs (Task 12), used by operator in Task 16 ✓
+- Bringup project isolated, 4 phases as separate PlatformIO envs, all fully implemented up front → Tasks 12–15 ✓
+- README + docs/BRINGUP.md (operator step-through + tunable-knobs table) → Task 16 (BRINGUP), Task 17 (README) ✓
+- CLAUDE.md workflow (tag, branch, per-phase validation) → Task 0 (tag/branch), Task 16 (operator step-through validation), Task 18 (finish) ✓
 
 **Placeholder scan:** No TBD/TODO; every code step has complete code; hardware-validation steps have explicit pass criteria. ✓
 
 **Type consistency:** `AB`/`DQ`/`PIState`/`OmegaEst` defined in Task 1–3, consumed identically in Tasks 9–11. `park`/`inversePark`/`piStep`/`omegaStep`/`countsToAmps`/`clampCurrent`/`ledDuty`/`electricalAngle` signatures match across definer and callers. `focSetpoint/focTelemetry/focSetLagComp/focStart` consistent between `foc.h` (Task 10) and `rotev.cpp` (Task 11) and bringup sketches. ✓
 
-**Known hardware-tuning risks (validated, not blocking the plan):** exact ADC sample instant within the center-aligned window and overclock ceiling are tuned during Tasks 13–15 using `LOOP_TIMING_PIN`; `ADC_OVERSAMPLE` drops to 2× if the 4× burst proves too wide. These are the spec's explicitly-open hardware assumptions.
+**Known hardware-tuning risks (operator-tunable, not blocking the plan):** exact ADC sample instant within the center-aligned window and the overclock ceiling are adjusted during the Task 16 step-through via the Tunable Knobs table (`SAMPLE-INSTANT`, `SYSCLK`) using `LOOP_TIMING_PIN`; `ADC_OVERSAMPLE` drops to 2× (`OVERSAMPLE`) if the 4× burst proves too wide. These are the spec's explicitly-open hardware assumptions, and each maps to a documented knob rather than a code rewrite.
