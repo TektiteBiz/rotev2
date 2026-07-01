@@ -1,6 +1,9 @@
 #pragma once
 #include "constants.h"
 #include "hardware/gpio.h"
+#ifdef ENABLE_LOOP_TIMING
+#include "hardware/structs/sio.h"
+#endif
 namespace rotev {
 inline void debugTimingInit() {
 #ifdef ENABLE_LOOP_TIMING
@@ -17,4 +20,4 @@ inline void debugTimingLow() {
   sio_hw->gpio_clr = 1u << PIN_LOOP_TIMING;
 #endif
 }
-}
+} // namespace rotev
