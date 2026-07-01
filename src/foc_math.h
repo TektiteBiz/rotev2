@@ -10,4 +10,8 @@ DQ park(AB i, float theta_e);
 // Inverse Park: dq voltage command -> normalized alpha-beta phase duty in [-1,1].
 AB inversePark(float ud, float uq, float theta_e, float vbus);
 
+struct PIState { float integ; };
+void  piReset(PIState& s);
+float piStep(PIState& s, float error, float kp, float ki, float dt, float out_limit);
+
 } // namespace rotev

@@ -20,4 +20,15 @@ AB inversePark(float ud, float uq, float theta_e, float vbus) {
   return { clampf(va * inv, -1.0f, 1.0f), clampf(vb * inv, -1.0f, 1.0f) };
 }
 
+void piReset(PIState& s) { s.integ = 0.0f; }
+
+float piStep(PIState& s, float error, float kp, float ki, float dt, float out_limit) {
+  float integ_next = s.integ + ki * error * dt;
+  float unsat = kp * error + integ_next;
+  float out = clampf(unsat, -out_limit, out_limit);
+  // Anti-windup: only commit the integrator if we are not saturating further out.
+  if (out == unsat) s.integ = integ_next;
+  return out;
+}
+
 } // namespace rotev
