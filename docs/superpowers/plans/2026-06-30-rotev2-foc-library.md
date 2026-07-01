@@ -26,6 +26,7 @@
 - **Bus voltage:** `VBUS_V = 12.0f`, isolated behind `inversePark(...)` so a future ADC bus read is a one-line change.
 - **Commit style:** commit after every green step. Never work on `main` — a feature branch + pre-feature tag is created before Task 1.
 - **Bringup edits are bounded:** during hardware bringup the operator changes ONLY values listed in the `docs/BRINGUP.md` Tunable Knobs table (Task 16) — no library logic is rewritten. Every tunable is a single named constant or one clearly-marked line.
+- **No vestigial code:** the shipped library must read as if written cleanly in one pass. Any exploratory/diagnostic/alternative code introduced while chasing a hardware result must be removed once the decision is settled — e.g., if `sinf`/`cosf` meets the timing budget, NO sin/cos LUT code exists anywhere (not commented-out, not `#if 0`, not an unused function); temporary probe logging is deleted; abandoned branches are removed. A path is either the chosen implementation or it is gone. `ENABLE_LOOP_TIMING` is the one intentional, documented compile-time seam and stays. This is enforced by the cleanup pass in Task 18.
 
 ---
 
@@ -1522,17 +1523,28 @@ git commit -m "docs: README with API, GPIO map, dual-core contract, motor/tuning
 
 ### Task 18: Finish the branch
 
-- [ ] **Step 1: Run the full native test suite once more**
+- [ ] **Step 1: Cleanup pass — remove all vestigial code**
+
+Once every phase's tuning decisions are settled, sweep the whole tree so it reads as a clean first-pass implementation:
+- If `sinf`/`cosf` met the timing budget (confirmed via `LOOP_TIMING_PIN`), verify **no** sin/cos LUT code, table, or generator exists anywhere. If a LUT *was* required, then the plain `sinf`/`cosf` path must be gone instead — exactly one lives.
+- Delete any temporary probe/`Serial.print` diagnostics added while chasing a result that are not part of the phase sketches' intended output.
+- Remove dead branches, `#if 0` blocks, commented-out experiments, and any function/constant no longer referenced (grep for each `foc_math`/module symbol; drop unused ones).
+- Confirm the only intentional compile-time seam remaining is `ENABLE_LOOP_TIMING`; the `inversePark(...,vbus)` boundary stays as the documented future-ADC seam.
+- Re-run `pio test -e native` and recompile all four envs after the sweep to prove nothing removed was actually load-bearing.
+
+Commit: `git commit -am "refactor: remove bringup scaffolding; clean final implementation"`
+
+- [ ] **Step 2: Run the full native test suite once more**
 
 Run: `pio test -e native`
 Expected: PASS (all foc_math tests).
 
-- [ ] **Step 2: Confirm all four bringup environments compile**
+- [ ] **Step 3: Confirm all four bringup environments compile**
 
 Run: `cd bringup && pio run -e phase1 && pio run -e phase2 && pio run -e phase3 && pio run -e phase4`
 Expected: SUCCESS each.
 
-- [ ] **Step 3: Use `superpowers:finishing-a-development-branch`** to decide merge/PR/cleanup for `feature/foc-library`.
+- [ ] **Step 4: Use `superpowers:finishing-a-development-branch`** to decide merge/PR/cleanup for `feature/foc-library`.
 
 ---
 
@@ -1554,6 +1566,7 @@ Expected: SUCCESS each.
 - Bringup project isolated, 4 phases as separate PlatformIO envs, all fully implemented up front → Tasks 12–15 ✓
 - README + docs/BRINGUP.md (operator step-through + tunable-knobs table) → Task 16 (BRINGUP), Task 17 (README) ✓
 - CLAUDE.md workflow (tag, branch, per-phase validation) → Task 0 (tag/branch), Task 16 (operator step-through validation), Task 18 (finish) ✓
+- No vestigial code / clean final state → Global Constraints + Task 18 Step 1 cleanup pass ✓ (LUT only exists if it replaced sinf/cosf, never alongside it)
 
 **Placeholder scan:** No TBD/TODO; every code step has complete code; hardware-validation steps have explicit pass criteria. ✓
 
