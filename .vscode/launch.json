@@ -12,35 +12,32 @@
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug",
-            "executable": "C:/Users/bvikramadity/Development/nv/rotev2/.pio/build/rp2350/firmware.elf",
-            "projectEnvName": "rp2350",
-            "toolchainBinDir": "C:/Users/bvikramadity/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+            "executable": "/Users/nv/Documents/Embedded/rotev2/.pio/build/native/program",
+            "projectEnvName": "native",
+            "toolchainBinDir": "/usr/bin",
             "internalConsoleOptions": "openOnSessionStart",
-            "svdPath": "C:/Users/bvikramadity/.platformio/platforms/raspberrypi/misc/svd/rp2350.svd",
             "preLaunchTask": {
                 "type": "PlatformIO",
-                "task": "Pre-Debug (rp2350)"
+                "task": "Pre-Debug"
             }
         },
         {
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (skip Pre-Debug)",
-            "executable": "C:/Users/bvikramadity/Development/nv/rotev2/.pio/build/rp2350/firmware.elf",
-            "projectEnvName": "rp2350",
-            "toolchainBinDir": "C:/Users/bvikramadity/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
-            "internalConsoleOptions": "openOnSessionStart",
-            "svdPath": "C:/Users/bvikramadity/.platformio/platforms/raspberrypi/misc/svd/rp2350.svd"
+            "executable": "/Users/nv/Documents/Embedded/rotev2/.pio/build/native/program",
+            "projectEnvName": "native",
+            "toolchainBinDir": "/usr/bin",
+            "internalConsoleOptions": "openOnSessionStart"
         },
         {
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (without uploading)",
-            "executable": "C:/Users/bvikramadity/Development/nv/rotev2/.pio/build/rp2350/firmware.elf",
-            "projectEnvName": "rp2350",
-            "toolchainBinDir": "C:/Users/bvikramadity/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+            "executable": "/Users/nv/Documents/Embedded/rotev2/.pio/build/native/program",
+            "projectEnvName": "native",
+            "toolchainBinDir": "/usr/bin",
             "internalConsoleOptions": "openOnSessionStart",
-            "svdPath": "C:/Users/bvikramadity/.platformio/platforms/raspberrypi/misc/svd/rp2350.svd",
             "loadMode": "manual"
         }
     ]
