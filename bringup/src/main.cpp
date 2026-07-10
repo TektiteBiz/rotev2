@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #if PHASE == 1
   #include "../phase1_hw.h"
+#elif PHASE == 11  // phase1b
+  #include "../phase1b_motor.h"
 #elif PHASE == 2
   #include "../phase2_openloop.h"
 #elif PHASE == 3

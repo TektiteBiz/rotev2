@@ -19,6 +19,10 @@ static OmegaEst s_omega[2];
 static volatile bool s_lagcomp = false;
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
+// Pre-computed duties applied at the very start of the next ISR invocation,
+// before any slow computation, to minimize CC-register latency from the PWM wrap.
+static float s_next_a[2] = {0, 0};
+static float s_next_b[2] = {0, 0};
 
 // per-motor pin sets
 static void phasePins(Motor m, uint32_t& enA, uint32_t& phA, uint32_t& enB, uint32_t& phB) {
@@ -40,7 +44,7 @@ static void controlStep(Motor m) {
 
   if (!sp.enabled) {
     piReset(s_pid[m]); piReset(s_piq[m]); omegaReset(s_omega[m]);
-    pwmSetPhase(enA, phA, 0.0f); pwmSetPhase(enB, phB, 0.0f);
+    s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
     return;
   }
 
@@ -59,8 +63,8 @@ static void controlStep(Motor m) {
   }
 
   AB v = inversePark(ud, uq, theta_e, VBUS_V);     // normalized duties [-1,1]
-  pwmSetPhase(enA, phA, v.a);
-  pwmSetPhase(enB, phB, v.b);
+  s_next_a[m] = v.a;
+  s_next_b[m] = v.b;
 
   uint32_t irq2 = spin_lock_blocking(s_lock);
   s_tel[m].a = i.a;
@@ -72,7 +76,15 @@ static void __not_in_flash_func(pwmWrapISR)() {
   debugTimingHigh();
   pwm_clear_irq(pwmMasterSlice());
   Motor m = (s_turn == 0) ? MOTOR_1 : MOTOR_2;
-  controlStep(m);
+  // Apply last cycle's result immediately (before slow computation) so the
+  // CC register is written with minimal latency from the PWM wrap point.
+  // This prevents glitch pulses caused by the counter advancing past the old
+  // CC value before the new one is written.
+  uint32_t enA, phA, enB, phB;
+  phasePins(m, enA, phA, enB, phB);
+  pwmSetPhase(enA, phA, s_next_a[m]);
+  pwmSetPhase(enB, phB, s_next_b[m]);
+  controlStep(m);  // computes s_next_a/b for the cycle after this one
   s_turn ^= 1;
   debugTimingLow();
 }
