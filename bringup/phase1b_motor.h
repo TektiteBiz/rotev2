@@ -1,24 +1,21 @@
 #pragma once
 #include <Arduino.h>
 #include <rotev.h>
-
-#include "foc_math.h"
-#include "hw.h"
-#include "led.h"
-#include "pwm.h"
 using namespace rotev;
 
-// Open-loop sinusoidal drive with NO current sensing and NO FOC ISR.
-// Purpose: confirm motor moves and direction is correct before closing the
-// current loop.
+// Open-loop sinusoidal drive via the FOC ISR.
+// The inverter runs normally (correct ADC timing, telemetry populated) but
+// the PI is bypassed — uq_volts is applied directly through inverse-Park.
+// Use this to verify current sense sign, amplitude, and channel assignment
+// before closing the current loop in phase 2.
 //
 // Tunable knobs:
-//   RPM       -- mechanical speed
-//   DUTY_PEAK -- peak duty cycle [0, 1] relative to Vbus (0.3 = 3.6 V at 12 V
-//   bus)
+//   RPM      -- mechanical speed
+//   UQ_VOLTS -- peak q-axis voltage (3.6 V = 30% of 12 V bus)
 
 static constexpr float RPM = 5.0f;
-static constexpr float DUTY_PEAK = 0.3f;
+static constexpr float UQ_VOLTS =
+    3.0f;  // 0.3 * VBUS_V, matches old DUTY_PEAK = 0.3
 
 static float theta = 0.0f;
 static uint32_t last_us = 0;
@@ -26,10 +23,8 @@ static uint32_t last_print_us = 0;
 
 void setup() {
   Serial.begin(115200);
-  hwInit();
-  ledInit();
-  pwmInit();
-  hwSetNsleep(MOTOR_1, true);
+  begin();
+  motorEnable(MOTOR_1);
   last_us = last_print_us = micros();
 }
 
@@ -39,20 +34,17 @@ void loop() {
   last_us = now;
   theta += 2.0f * PI * (RPM / 60.0f) * dt;
 
-  float theta_e = electricalAngle(theta);
-  float va = DUTY_PEAK * sinf(theta_e);
-  float vb = DUTY_PEAK * cosf(theta_e);
-  pwmSetPhase(PIN_ENA_1, PIN_PHA_1, va);
-  pwmSetPhase(PIN_ENB_1, PIN_PHB_1, vb);
+  motorWriteVoltage(theta, UQ_VOLTS, MOTOR_1);
 
-  // Print commanded duties so the Serial Plotter shows two clean
-  // 90-degree-offset sines.
   if (now - last_print_us >= 25000) {
     last_print_us = now;
-    Serial.print(">A:");
-    Serial.print(va);
-    Serial.print(",B:");
-    Serial.println(vb);
+    // sensA/sensB are the ISR-timed ADC readings in amps.
+    // Expected: two sinusoids ~90 deg apart, amplitude ~ UQ_VOLTS / PHASE_R.
+    // If inverted vs expected direction: negate in adc.cpp (ISENSE-SIGN knob).
+    Serial.print(">sensA:");
+    Serial.print(motorCurrentA(MOTOR_1));
+    Serial.print(",sensB:");
+    Serial.println(motorCurrentB(MOTOR_1));
   }
 
   delayMicroseconds(500);

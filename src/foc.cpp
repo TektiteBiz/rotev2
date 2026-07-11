@@ -10,9 +10,9 @@
 
 namespace rotev {
 
-struct Setpoint { float theta_mech; float iq_cmd; bool enabled; };
+struct Setpoint { float theta_mech; float iq_cmd; bool enabled; bool openloop; };
 
-static volatile Setpoint s_sp[2]   = {{0,0,false},{0,0,false}};
+static volatile Setpoint s_sp[2]   = {{0,0,false,false},{0,0,false,false}};
 static volatile AB       s_tel[2]  = {{0,0},{0,0}};
 static PIState  s_pid[2], s_piq[2];
 static OmegaEst s_omega[2];
@@ -30,17 +30,19 @@ static void phasePins(Motor m, uint32_t& enA, uint32_t& phA, uint32_t& enB, uint
   else              { enA=PIN_ENA_2; phA=PIN_PHA_2; enB=PIN_ENB_2; phB=PIN_PHB_2; }
 }
 
-static void controlStep(Motor m) {
+// i is pre-sampled at the start of the ISR, before any pwmSetPhase call,
+// so both ADC channels land within ~8 µs of counter=TOP (well before the
+// LOW→HIGH switching edge whose timing depends on duty cycle).
+static void controlStep(Motor m, AB i) {
   Setpoint sp;
   bool lag;
   uint32_t irq = spin_lock_blocking(s_lock);
   sp.theta_mech = s_sp[m].theta_mech;
   sp.iq_cmd     = s_sp[m].iq_cmd;
   sp.enabled    = s_sp[m].enabled;
+  sp.openloop   = s_sp[m].openloop;
   lag           = s_lagcomp;
   spin_unlock(s_lock, irq);
-
-  uint32_t enA,phA,enB,phB; phasePins(m, enA,phA,enB,phB);
 
   if (!sp.enabled) {
     piReset(s_pid[m]); piReset(s_piq[m]); omegaReset(s_omega[m]);
@@ -50,16 +52,22 @@ static void controlStep(Motor m) {
 
   const float dt = 1.0f / (PWM_HZ / 2.0f); // 12 kHz per motor
 
-  AB i = adcSampleMotor(m);                       // measured phase currents (alpha=A, beta=B)
   float theta_e = electricalAngle(sp.theta_mech);
-  float we = omegaStep(s_omega[m], theta_e, dt, 0.05f);
+  float ud, uq;
 
-  DQ dq = park(i, theta_e);                        // open-loop position assumption
-  float uq = piStep(s_piq[m], sp.iq_cmd - dq.q, KP, KI, dt, VBUS_V);
-  float ud = piStep(s_pid[m], 0.0f      - dq.d, KP, KI, dt, VBUS_V);
-  if (lag) {
-    uq += we * PHASE_L * dq.d;   // +we*Ld*Id
-    ud -= we * PHASE_L * dq.q;   // -we*Lq*Iq
+  if (sp.openloop) {
+    // Voltage mode: iq_cmd holds uq directly (volts), ud=0, PI not touched.
+    ud = 0.0f;
+    uq = sp.iq_cmd;
+  } else {
+    float we = omegaStep(s_omega[m], theta_e, dt, 0.05f);
+    DQ dq = park(i, theta_e);
+    uq = piStep(s_piq[m], sp.iq_cmd - dq.q, KP, KI, dt, VBUS_V);
+    ud = piStep(s_pid[m], 0.0f      - dq.d, KP, KI, dt, VBUS_V);
+    if (lag) {
+      uq += we * PHASE_L * dq.d;
+      ud -= we * PHASE_L * dq.q;
+    }
   }
 
   AB v = inversePark(ud, uq, theta_e, VBUS_V);     // normalized duties [-1,1]
@@ -76,15 +84,17 @@ static void __not_in_flash_func(pwmWrapISR)() {
   debugTimingHigh();
   pwm_clear_irq(pwmMasterSlice());
   Motor m = (s_turn == 0) ? MOTOR_1 : MOTOR_2;
-  // Apply last cycle's result immediately (before slow computation) so the
-  // CC register is written with minimal latency from the PWM wrap point.
-  // This prevents glitch pulses caused by the counter advancing past the old
-  // CC value before the new one is written.
+  // Sample ADC first, within ~8 µs of counter=TOP, before the LOW→HIGH
+  // switching edge (which arrives at (TOP-CC)/f_clk µs after TOP).  At any
+  // realistic duty both channels finish before that edge.
+  AB i_meas = adcSampleMotor(m);
+  // Apply last cycle's pre-computed duty.  CC write takes effect at the next
+  // counter=0, so it does not interfere with the sample already taken above.
   uint32_t enA, phA, enB, phB;
   phasePins(m, enA, phA, enB, phB);
   pwmSetPhase(enA, phA, s_next_a[m]);
   pwmSetPhase(enB, phB, s_next_b[m]);
-  controlStep(m);  // computes s_next_a/b for the cycle after this one
+  controlStep(m, i_meas);  // computes s_next_a/b for the cycle after this one
   s_turn ^= 1;
   debugTimingLow();
 }
@@ -110,6 +120,16 @@ void focSetpoint(Motor m, float theta_mech, float iq_cmd, bool enabled) {
   s_sp[m].theta_mech = theta_mech;
   s_sp[m].iq_cmd = clampCurrent(iq_cmd);
   s_sp[m].enabled = enabled;
+  s_sp[m].openloop = false;
+  spin_unlock(s_lock, irq);
+}
+
+void focSetVoltage(Motor m, float theta_mech, float uq_volts, bool enabled) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].theta_mech = theta_mech;
+  s_sp[m].iq_cmd = uq_volts;   // repurposed as voltage command; no current clamping
+  s_sp[m].enabled = enabled;
+  s_sp[m].openloop = true;
   spin_unlock(s_lock, irq);
 }
 

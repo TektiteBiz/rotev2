@@ -25,9 +25,22 @@ constexpr float ADC_MAX       = 4095.0f;
 constexpr float VOLTS_PER_AMP = SHUNT_OHMS * INA_GAIN; // 1.5
 constexpr float IMAX_A        = 1.1f;                  // command clamp / sensor range
 
+// --- Per-channel calibration (ISENSE-CAL knob) ---
+// Measure at motor idle (no current): ISENSE_OFFSET_x = -(ADC reading at 0 A).
+// Measure at known current: ISENSE_SCALE_x = expected_A / measured_A.
+// sensA is accurate; sensB shows -0.125 A offset and ~1.5x gain — tune these.
+constexpr float ISENSE_OFFSET_A = 0.0f;
+constexpr float ISENSE_OFFSET_B = 0.0f;   // set to +0.125 once confirmed at idle
+constexpr float ISENSE_SCALE_A  = 1.0f;
+constexpr float ISENSE_SCALE_B  = 1.0f;   // set to 1/1.5 ≈ 0.667 if shunt B is 22.5 mΩ
+
 // --- PWM / loop ---
 constexpr uint32_t PWM_HZ        = 24000;
-constexpr int      ADC_OVERSAMPLE = 4;
+// 2 samples × 2 µs each = 4 µs/channel → both A+B done at 8 µs after ISR,
+// before the LOW→HIGH switching edge at (TOP−CC)/150 MHz (≥10 µs for duty ≤ 50%).
+// 4 samples pushed channel B's window to 8–16 µs, straddling the edge at ≥25% duty
+// and causing the INA186 switching glitch to clip sensB negative peaks to −1.1 A.
+constexpr int      ADC_OVERSAMPLE = 2;
 
 // --- Bus voltage (future: from ADC) ---
 constexpr float VBUS_V = 12.0f;

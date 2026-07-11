@@ -21,7 +21,8 @@ AB adcSampleMotor(Motor m) {
   uint chB = (m == MOTOR_1) ? ADC_SOB_1 : ADC_SOB_2;
   uint16_t a = oversample(chA);
   uint16_t b = oversample(chB);
-  return { countsToAmps(a), countsToAmps(b) }; // AB.a = phase A current, AB.b = phase B
+  return { countsToAmps(a) * ISENSE_SCALE_A + ISENSE_OFFSET_A,
+           countsToAmps(b) * ISENSE_SCALE_B + ISENSE_OFFSET_B };
 }
 
 } // namespace rotev
