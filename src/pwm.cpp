@@ -26,11 +26,15 @@ void pwmInit() {
   cfgEn(PIN_ENA_1); cfgEn(PIN_ENB_1); cfgEn(PIN_ENA_2); cfgEn(PIN_ENB_2);
   // Start all four slices simultaneously from counter=0 so their PWM edges
   // are in a known, fixed relationship with the master-slice IRQ.
+  // pwm_set_mask_enabled() writes the WHOLE enable register, not just the
+  // given bits -- it would silently disable every other already-running
+  // slice (e.g. the LED's, enabled earlier in ledInit()). OR the mask in
+  // instead so unrelated slices are left alone.
   uint32_t mask = (1u << pwm_gpio_to_slice_num(PIN_ENA_1)) |
                   (1u << pwm_gpio_to_slice_num(PIN_ENB_1)) |
                   (1u << pwm_gpio_to_slice_num(PIN_ENA_2)) |
                   (1u << pwm_gpio_to_slice_num(PIN_ENB_2));
-  pwm_set_mask_enabled(mask);
+  pwm_hw->en |= mask;
 }
 
 unsigned pwmMasterSlice() { return pwm_gpio_to_slice_num(PIN_ENA_1); }

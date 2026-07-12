@@ -9,14 +9,16 @@ using namespace rotev;
 // entirely on phase A instead of sweeping sinusoidally across A/B.
 //
 // inversePark(ud=0, uq, theta_e): va = -uq*sin(theta_e), vb = uq*cos(theta_e).
-// theta_e = -90 deg -> va = uq, vb = 0.  theta_e = theta_mech * POLE_PAIRS,
-// so theta_mech = -PI / (2 * POLE_PAIRS) gives theta_e = -90 deg.
+// theta_e = -90 deg gives va = +uq, which measured as NEGATIVE sensA
+// (board's ISENSE-SIGN/PH-DIR convention is opposite this derivation's sign).
+// Flipping to theta_e = +90 deg flips va's sign to match, giving positive
+// sensA for a positive UQ_VOLTS. theta_e = theta_mech * POLE_PAIRS.
 //
 // No PI, no ab_mode, no integrator -- nothing here can wind up or saturate.
 // At DC the winding is purely resistive, so V = I * R predicts the current:
 // 0.875 V / 3.5 ohm -> ~0.25 A.
 
-static constexpr float THETA_MECH_PHASE_A = -3.14159265f / (2.0f * POLE_PAIRS);
+static constexpr float THETA_MECH_PHASE_A = 3.14159265f / (2.0f * POLE_PAIRS);
 static constexpr float UQ_VOLTS = 0.875f;  // 0.25 A * 3.5 ohm
 
 static uint32_t p1c_last_print = 0;
