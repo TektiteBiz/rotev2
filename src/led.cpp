@@ -20,7 +20,12 @@ static void cfg(uint32_t pin) {
   pwm_set_gpio_level(pin, LED_TOP); // active-low: start off
 }
 
-void ledInit() { cfg(PIN_LED_R); cfg(PIN_LED_G); cfg(PIN_LED_B); }
+void ledInit() {
+  cfg(PIN_LED_R); cfg(PIN_LED_G); cfg(PIN_LED_B);
+  // R and G share a PWM slice: the second cfg call resets the CC for both
+  // channels, leaving R at CC=0 (full brightness). Explicitly turn all off.
+  ledSet(0, 0, 0);
+}
 
 void ledSet(uint8_t r, uint8_t g, uint8_t b) {
   pwm_set_gpio_level(PIN_LED_R, ledDuty(r, LED_TOP));

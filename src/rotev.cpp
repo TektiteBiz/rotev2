@@ -39,6 +39,10 @@ void motorWriteVoltage(float theta_rad, float uq_volts, Motor m) {
   focSetVoltage(m, theta_rad, uq_volts, s_en[m]);
 }
 
+void motorWriteVoltageAB(float va_volts, float vb_volts, Motor m) {
+  focSetVoltageAB(m, va_volts / VBUS_V, vb_volts / VBUS_V, s_en[m]);
+}
+
 void setLagComp(bool on) { focSetLagComp(on); }
 
 void ledColor(uint8_t r, uint8_t g, uint8_t b) { ledSet(r, g, b); }

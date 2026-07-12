@@ -7,6 +7,7 @@ void  motorEnable(Motor m);
 void  motorDisable(Motor m);
 void  motorWrite(float theta_rad, float amps, Motor m);
 void  motorWriteVoltage(float theta_rad, float uq_volts, Motor m);
+void  motorWriteVoltageAB(float va_volts, float vb_volts, Motor m);
 void  setLagComp(bool on);  // enable/disable lag-compensation (cross-coupling decoupling)
 void  ledColor(uint8_t r, uint8_t g, uint8_t b);
 bool  buttonPressed(Button b);

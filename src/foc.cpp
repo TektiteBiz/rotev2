@@ -10,9 +10,9 @@
 
 namespace rotev {
 
-struct Setpoint { float theta_mech; float iq_cmd; bool enabled; bool openloop; };
+struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; bool enabled; bool openloop; bool ab_mode; };
 
-static volatile Setpoint s_sp[2]   = {{0,0,false,false},{0,0,false,false}};
+static volatile Setpoint s_sp[2]   = {{0,0,0,false,false,false},{0,0,0,false,false,false}};
 static volatile AB       s_tel[2]  = {{0,0},{0,0}};
 static PIState  s_pid[2], s_piq[2];
 static OmegaEst s_omega[2];
@@ -55,6 +55,19 @@ static void controlStep(Motor m, AB i) {
   float theta_e = electricalAngle(sp.theta_mech);
   float ud, uq;
 
+  if (sp.ab_mode) {
+    // Direct stationary-frame duty mode: bypass all transforms and the PI.
+    // Used by phase 1c to test current sensing without dq-frame complexity.
+    piReset(s_pid[m]); piReset(s_piq[m]);
+    auto clamp1 = [](float x){ return x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x); };
+    s_next_a[m] = clamp1(sp.iq_cmd);
+    s_next_b[m] = clamp1(sp.vb_duty);
+    uint32_t irq2 = spin_lock_blocking(s_lock);
+    s_tel[m].a = i.a; s_tel[m].b = i.b;
+    spin_unlock(s_lock, irq2);
+    return;
+  }
+
   if (sp.openloop) {
     // Voltage mode: iq_cmd holds uq directly (volts), ud=0, PI not touched.
     ud = 0.0f;
@@ -84,12 +97,10 @@ static void __not_in_flash_func(pwmWrapISR)() {
   debugTimingHigh();
   pwm_clear_irq(pwmMasterSlice());
   Motor m = (s_turn == 0) ? MOTOR_1 : MOTOR_2;
-  // Sample ADC first, within ~8 µs of counter=TOP, before the LOW→HIGH
-  // switching edge (which arrives at (TOP-CC)/f_clk µs after TOP).  At any
-  // realistic duty both channels finish before that edge.
+  // Counter=0 (ISR fire) is in the active-drive period (EN HIGH from 0 to CC).
+  // ADC samples the coil current during the driven phase.
   AB i_meas = adcSampleMotor(m);
-  // Apply last cycle's pre-computed duty.  CC write takes effect at the next
-  // counter=0, so it does not interfere with the sample already taken above.
+  // Apply last cycle's pre-computed duty.
   uint32_t enA, phA, enB, phB;
   phasePins(m, enA, phA, enB, phB);
   pwmSetPhase(enA, phA, s_next_a[m]);
@@ -138,6 +149,15 @@ AB focTelemetry(Motor m) {
   AB t; t.a = s_tel[m].a; t.b = s_tel[m].b;
   spin_unlock(s_lock, irq);
   return t;
+}
+
+void focSetVoltageAB(Motor m, float va_duty, float vb_duty, bool enabled) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].iq_cmd  = va_duty;
+  s_sp[m].vb_duty = vb_duty;
+  s_sp[m].enabled = enabled;
+  s_sp[m].ab_mode = true;
+  spin_unlock(s_lock, irq);
 }
 
 void focSetLagComp(bool on) {

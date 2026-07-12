@@ -16,14 +16,21 @@ static void cfgEn(uint32_t pin) {
   pwm_config_set_phase_correct(&c, true);
   pwm_config_set_wrap(&c, s_top);
   pwm_config_set_clkdiv(&c, 1.0f);
-  pwm_init(slice, &c, true);
-  pwm_set_gpio_level(pin, 0);
+  pwm_init(slice, &c, false);   // don't start yet; start all slices together below
+  pwm_set_gpio_level(pin, 0);   // CC=0 → 0% duty
 }
 
 void pwmInit() {
   // phase-correct: f = f_sys / (2 * (TOP+1)) -> TOP = f_sys/(2*PWM_HZ) - 1
   s_top = (uint16_t)(clock_get_hz(clk_sys) / (2u * PWM_HZ) - 1u);
   cfgEn(PIN_ENA_1); cfgEn(PIN_ENB_1); cfgEn(PIN_ENA_2); cfgEn(PIN_ENB_2);
+  // Start all four slices simultaneously from counter=0 so their PWM edges
+  // are in a known, fixed relationship with the master-slice IRQ.
+  uint32_t mask = (1u << pwm_gpio_to_slice_num(PIN_ENA_1)) |
+                  (1u << pwm_gpio_to_slice_num(PIN_ENB_1)) |
+                  (1u << pwm_gpio_to_slice_num(PIN_ENA_2)) |
+                  (1u << pwm_gpio_to_slice_num(PIN_ENB_2));
+  pwm_set_mask_enabled(mask);
 }
 
 unsigned pwmMasterSlice() { return pwm_gpio_to_slice_num(PIN_ENA_1); }
