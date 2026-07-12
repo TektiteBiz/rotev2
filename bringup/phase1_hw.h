@@ -1,33 +1,29 @@
 #pragma once
 #include <Arduino.h>
 #include <rotev.h>
-#include "hw.h"
-#include "led.h"
-#include "pwm.h"
 using namespace rotev;
+
+// Basic hardware verification: enable/disable the drivers, log idle phase
+// currents, and confirm the LED/buttons work. No PWM is applied to the
+// motor windings beyond what the driver requires to acknowledge enable.
 
 void setup() {
   Serial.begin(115200);
-  // Skip focStart so no core1 ISR overwrites PWM; init hardware directly.
-  hwInit();
-  ledInit();
-  pwmInit();
-  hwSetNsleep(MOTOR_1, true);
-  hwSetNsleep(MOTOR_2, true);
-  pwmSetPhase(PIN_ENA_1, PIN_PHA_1, 0.3f);
-  pwmSetPhase(PIN_ENB_1, PIN_PHB_1, 0.3f);
+  begin();
+  motorEnable(MOTOR_1);   // nSLEEP high; no motion commanded
+  motorEnable(MOTOR_2);
 }
 
 void loop() {
   bool go   = buttonPressed(BTN_GO);
   bool stop = buttonPressed(BTN_STOP);
 
-  Serial.print("BTN_GO="); Serial.print(go);
-  Serial.print(" BTN_STOP="); Serial.print(stop);
-  Serial.print(" PIN20="); Serial.print(digitalRead(PIN_BTN_GO));
-  Serial.print(" PIN19="); Serial.println(digitalRead(PIN_BTN_STOP));
+  Serial.print(">motorCurrentA(MOTOR_1):"); Serial.print(motorCurrentA(MOTOR_1));
+  Serial.print(",motorCurrentB(MOTOR_1):"); Serial.print(motorCurrentB(MOTOR_1));
+  Serial.print(",motorCurrentA(MOTOR_2):"); Serial.print(motorCurrentA(MOTOR_2));
+  Serial.print(",motorCurrentB(MOTOR_2):"); Serial.println(motorCurrentB(MOTOR_2));
 
-  if (go)   ledSet(0, 255, 0);
-  if (stop) ledSet(255, 0, 0);
+  if (go)   ledColor(0, 255, 0);
+  if (stop) ledColor(255, 0, 0);
   delay(50);
 }

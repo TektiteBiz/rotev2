@@ -3,11 +3,22 @@
 #include <rotev.h>
 using namespace rotev;
 
-// DC current hold: target 0.25 A into phase A, phase B = 0.
-// No rotation, no transforms. Just PI + ADC + PWM.
+// Stationary DC current test: reuses the exact open-loop voltage path proven
+// working in phase1b (motorWriteVoltage / focSetVoltage), just with a FIXED
+// electrical angle instead of a rotating one, so the commanded voltage lands
+// entirely on phase A instead of sweeping sinusoidally across A/B.
+//
+// inversePark(ud=0, uq, theta_e): va = -uq*sin(theta_e), vb = uq*cos(theta_e).
+// theta_e = -90 deg -> va = uq, vb = 0.  theta_e = theta_mech * POLE_PAIRS,
+// so theta_mech = -PI / (2 * POLE_PAIRS) gives theta_e = -90 deg.
+//
+// No PI, no ab_mode, no integrator -- nothing here can wind up or saturate.
+// At DC the winding is purely resistive, so V = I * R predicts the current:
+// 0.875 V / 3.5 ohm -> ~0.25 A.
 
-static float    p1c_integ      = 0.0f;
-static uint32_t p1c_last       = 0;
+static constexpr float THETA_MECH_PHASE_A = -3.14159265f / (2.0f * POLE_PAIRS);
+static constexpr float UQ_VOLTS = 0.875f;  // 0.25 A * 3.5 ohm
+
 static uint32_t p1c_last_print = 0;
 
 void setup() {
@@ -15,28 +26,18 @@ void setup() {
   begin();
   motorEnable(MOTOR_1);
   ledColor(0, 80, 0);  // green
-  p1c_last = micros();
 }
 
 void loop() {
+  motorWriteVoltage(THETA_MECH_PHASE_A, UQ_VOLTS, MOTOR_1);
+
   uint32_t now = micros();
-  float dt = (now - p1c_last) * 1e-6f;
-  p1c_last = now;
-
-  float ia    = motorCurrentA(MOTOR_1);
-  float error = 0.25f - ia;
-
-  float next = p1c_integ + KI * error * dt;
-  float ua   = KP * error + next;
-  if (ua >  VBUS_V) ua =  VBUS_V;
-  if (ua < -VBUS_V) ua = -VBUS_V;
-  else p1c_integ = next;   // only integrate when not saturated
-
-  motorWriteVoltageAB(ua, 0.0f, MOTOR_1);
-
   if (now - p1c_last_print >= 25000) {
     p1c_last_print = now;
-    Serial.println(ia, 3);
+    Serial.print(">sensA:");
+    Serial.print(motorCurrentA(MOTOR_1), 3);
+    Serial.print(",sensB:");
+    Serial.println(motorCurrentB(MOTOR_1), 3);
   }
 
   delayMicroseconds(500);
