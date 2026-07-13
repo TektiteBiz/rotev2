@@ -26,9 +26,9 @@ static float s_next_a[2] = {0, 0};
 static float s_next_b[2] = {0, 0};
 
 // per-motor pin sets
-static void phasePins(Motor m, uint32_t& enA, uint32_t& phA, uint32_t& enB, uint32_t& phB) {
-  if (m == MOTOR_1) { enA=PIN_ENA_1; phA=PIN_PHA_1; enB=PIN_ENB_1; phB=PIN_PHB_1; }
-  else              { enA=PIN_ENA_2; phA=PIN_PHA_2; enB=PIN_ENB_2; phB=PIN_PHB_2; }
+static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
+  if (m == MOTOR_1) { phA=PIN_PHA_1; phB=PIN_PHB_1; }
+  else              { phA=PIN_PHA_2; phB=PIN_PHB_2; }
 }
 
 // i is pre-sampled at the start of the ISR, before any pwmSetPhase call,
@@ -111,14 +111,17 @@ static void __not_in_flash_func(pwmWrapISR)() {
   debugTimingHigh();
   pwm_clear_irq(pwmMasterSlice());
   Motor m = (s_turn == 0) ? MOTOR_1 : MOTOR_2;
-  // Counter=0 (ISR fire) is in the active-drive period (EN HIGH from 0 to CC).
-  // ADC samples the coil current during the driven phase.
+  // Locked-antiphase: EN is held HIGH continuously (hardwired) and current
+  // is always actively driven (never coasting), so there's no "freewheeling
+  // window" in the old sign-magnitude sense -- counter=0 is still a valid,
+  // well-defined sample point (the fixed trough of the center-aligned
+  // triangular carrier).
   AB i_meas = adcSampleMotor(m);
   // Apply last cycle's pre-computed duty.
-  uint32_t enA, phA, enB, phB;
-  phasePins(m, enA, phA, enB, phB);
-  pwmSetPhase(enA, phA, s_next_a[m]);
-  pwmSetPhase(enB, phB, s_next_b[m]);
+  uint32_t phA, phB;
+  phasePins(m, phA, phB);
+  pwmSetPhase(phA, s_next_a[m]);
+  pwmSetPhase(phB, s_next_b[m]);
   controlStep(m, i_meas);  // computes s_next_a/b for the cycle after this one
   s_turn ^= 1;
   debugTimingLow();
