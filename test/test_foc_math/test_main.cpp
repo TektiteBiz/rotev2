@@ -95,6 +95,52 @@ void test_led_duty_midpoint() {
   TEST_ASSERT_EQUAL_UINT16((uint16_t)(3124 - 1568), ledDuty(128, 3124));
 }
 
+void test_buzz_clamp_within_range() {
+  TEST_ASSERT_EQUAL_UINT16(2000, buzzClampFreq(2000));
+}
+void test_buzz_clamp_below_min() {
+  TEST_ASSERT_EQUAL_UINT16(1000, buzzClampFreq(500));
+}
+void test_buzz_clamp_above_max() {
+  TEST_ASSERT_EQUAL_UINT16(4000, buzzClampFreq(5000));
+}
+void test_ads_raw_to_volts_zero() {
+  // raw16 = 0 -> 0V
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.0f, adsRawToVolts(0));
+}
+void test_ads_raw_to_volts_positive_full_scale() {
+  // 12-bit code 2047 (max positive), left-justified into upper 12 bits of 16-bit reg: 2047 << 4
+  int16_t raw = (int16_t)(2047 << 4);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 2047.0f * (4.096f / 2048.0f), adsRawToVolts(raw));
+}
+void test_ads_raw_to_volts_negative() {
+  // 12-bit code -1 (0xFFF), left-justified: 0xFFF0 as int16_t
+  int16_t raw = (int16_t)0xFFF0;
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -1.0f * (4.096f / 2048.0f), adsRawToVolts(raw));
+}
+void test_divider_to_vbus_matches_ratio() {
+  // 12V bus -> divider output = 12 * 2.2/(7.3+2.2) = 2.7789...V -> undo should recover 12V
+  float v_div = 12.0f * (2200.0f / (7300.0f + 2200.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 12.0f, dividerToVbus(v_div));
+}
+void test_adc_seq_channel_weights_ain0() {
+  // Sequence: AIN0, AIN1, AIN0, AIN2, AIN0, AIN3 (repeating, length 6)
+  TEST_ASSERT_EQUAL_UINT8(0, adcSeqChannel(0));
+  TEST_ASSERT_EQUAL_UINT8(1, adcSeqChannel(1));
+  TEST_ASSERT_EQUAL_UINT8(0, adcSeqChannel(2));
+  TEST_ASSERT_EQUAL_UINT8(2, adcSeqChannel(3));
+  TEST_ASSERT_EQUAL_UINT8(0, adcSeqChannel(4));
+  TEST_ASSERT_EQUAL_UINT8(3, adcSeqChannel(5));
+  TEST_ASSERT_EQUAL_UINT8(0, adcSeqChannel(6));  // wraps
+}
+void test_adc_config_for_channel_selects_mux() {
+  // Channel 0 (AIN0) config: OS=1, MUX=100, PGA=001, MODE=1, DR=111, COMP_QUE=11 -> 0xC3E3
+  TEST_ASSERT_EQUAL_UINT16(0xC3E3, adcConfigForChannel(0));
+  TEST_ASSERT_EQUAL_UINT16(0xD3E3, adcConfigForChannel(1));  // AIN1: MUX=101
+  TEST_ASSERT_EQUAL_UINT16(0xE3E3, adcConfigForChannel(2));  // AIN2: MUX=110
+  TEST_ASSERT_EQUAL_UINT16(0xF3E3, adcConfigForChannel(3));  // AIN3: MUX=111
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_park_zero_angle_is_identity);
@@ -114,5 +160,14 @@ int main() {
   RUN_TEST(test_led_duty_active_low);
   RUN_TEST(test_omega_first_call_returns_zero);
   RUN_TEST(test_led_duty_midpoint);
+  RUN_TEST(test_buzz_clamp_within_range);
+  RUN_TEST(test_buzz_clamp_below_min);
+  RUN_TEST(test_buzz_clamp_above_max);
+  RUN_TEST(test_ads_raw_to_volts_zero);
+  RUN_TEST(test_ads_raw_to_volts_positive_full_scale);
+  RUN_TEST(test_ads_raw_to_volts_negative);
+  RUN_TEST(test_divider_to_vbus_matches_ratio);
+  RUN_TEST(test_adc_seq_channel_weights_ain0);
+  RUN_TEST(test_adc_config_for_channel_selects_mux);
   return UNITY_END();
 }

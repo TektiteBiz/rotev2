@@ -31,4 +31,24 @@ float    clampCurrent(float amps);
 // Active-low LED duty cycle: returns top - (value*top)/255.
 uint16_t ledDuty(uint8_t value, uint16_t top);
 
+// Buzzer frequency clamp (see constants.h BUZZ_MIN_HZ/BUZZ_MAX_HZ).
+uint16_t buzzClampFreq(uint16_t freq_hz);
+
+// ADS1015 raw 16-bit register value (12-bit result left-justified) -> volts at
+// the ±4.096V PGA setting used for every channel.
+float adsRawToVolts(int16_t raw16);
+
+// Undoes the 7.3k/2.2k bus-voltage divider to recover the actual bus voltage.
+float dividerToVbus(float v_div);
+
+// Weighted round-robin channel sequence for the ADS1015 background sampler:
+// AIN0 gets 2 of every 3 slots (bus voltage needs ~1kHz; user channels don't).
+// Returns 0=AIN0, 1=AIN1, 2=AIN2, 3=AIN3 for sequence index seq_idx (wraps mod 6).
+uint8_t adcSeqChannel(uint8_t seq_idx);
+
+// ADS1015 single-shot config register value (16-bit) to start a conversion on
+// the given channel (0=AIN0..3=AIN3): OS=1 (start), PGA=+-4.096V, MODE=single-shot,
+// DR=3300SPS, COMP_QUE=11 (comparator disabled).
+uint16_t adcConfigForChannel(uint8_t ch);
+
 } // namespace rotev

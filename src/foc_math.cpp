@@ -77,4 +77,36 @@ uint16_t ledDuty(uint8_t value, uint16_t top) {
   return (uint16_t)(top - on);                      // active-low invert
 }
 
+uint16_t buzzClampFreq(uint16_t freq_hz) {
+  if (freq_hz < BUZZ_MIN_HZ) return BUZZ_MIN_HZ;
+  if (freq_hz > BUZZ_MAX_HZ) return BUZZ_MAX_HZ;
+  return freq_hz;
+}
+
+float adsRawToVolts(int16_t raw16) {
+  int16_t code12 = raw16 >> 4;  // arithmetic shift preserves sign
+  return (float)code12 * (ADS1015_FSR_V / 2048.0f);
+}
+
+float dividerToVbus(float v_div) {
+  return v_div * (VBUS_DIV_HIGH_OHMS + VBUS_DIV_LOW_OHMS) / VBUS_DIV_LOW_OHMS;
+}
+
+uint8_t adcSeqChannel(uint8_t seq_idx) {
+  static constexpr uint8_t kSeq[6] = {0, 1, 0, 2, 0, 3};
+  return kSeq[seq_idx % 6];
+}
+
+uint16_t adcConfigForChannel(uint8_t ch) {
+  // OS=1, MUX=100+ch, PGA=001 (+-4.096V), MODE=1 (single-shot), DR=111 (3300SPS),
+  // COMP_MODE=0, COMP_POL=0, COMP_LAT=0, COMP_QUE=11 (disabled)
+  uint16_t mux = (uint16_t)(4 + ch);  // 100..111
+  return (uint16_t)(0x8000 |            // OS
+                     (mux << 12) |
+                     (0x1 << 9)  |      // PGA = 001
+                     (0x1 << 8)  |      // MODE = single-shot
+                     (0x7 << 5)  |      // DR = 111 (3300SPS)
+                     0x3);              // COMP_QUE = 11
+}
+
 } // namespace rotev
