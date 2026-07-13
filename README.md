@@ -137,7 +137,8 @@ enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 | PHB_2 | 1 | Motor 2 phase B PWM |
 | PHA_1 | 2 | Motor 1 phase A PWM |
 | PHB_1 | 3 | Motor 1 phase B PWM |
-| — | 4–7 | Unused by the driver (previously EN, now hardwired); free GPIO |
+| BUZZ | 4 | Passive piezo buzzer, 1-4kHz, 50% duty |
+| — | 5-7 | Free GPIO (6, 7 also usable as general-purpose PWM-capable user GPIO) |
 | LED_R | 8 | Red, active-low PWM |
 | LED_G | 9 | Green, active-low PWM |
 | SPI1_SCK / LOOP_TIMING | 10 | SPI1 SCK; also bringup loop-timing pin |
@@ -145,18 +146,20 @@ enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 | SPI1_MISO | 12 | SPI1 MISO (user bus) |
 | SPI1_CS | 13 | SPI1 CS (user bus) |
 | LED_B | 14 | Blue, active-low PWM |
-| I2C0_SDA | 16 | Board has pull-ups fitted |
-| I2C0_SCL | 17 | Board has pull-ups fitted |
-| BTN_STOP | 19 | Active-high, internal pull-down |
-| BTN_GO | 20 | Active-high, internal pull-down |
-| nSLEEP_1 | 21 | Motor 1 driver sleep (active-low) |
-| nSLEEP_2 | 22 | Motor 2 driver sleep (active-low) |
+| I2C0_SDA | 16 | Board has pull-ups fitted (user bus) |
+| I2C0_SCL | 17 | Board has pull-ups fitted (user bus) |
+| I2C1_SDA | 18 | ADS1015 ADC (internal, not user-facing) |
+| I2C1_SCL | 19 | ADS1015 ADC (internal, not user-facing) |
+| BTN_STOP | 20 | Active-high, internal pull-down |
+| BTN_GO | 21 | Active-high, internal pull-down |
+| nSLEEP_1 | 22 | Motor 1 driver sleep (active-low) |
+| nSLEEP_2 | 23 | Motor 2 driver sleep (active-low) |
 | SOB_1 / ADC0 | 26 | Motor 1 phase B current sense |
 | SOA_1 / ADC1 | 27 | Motor 1 phase A current sense |
 | SOB_2 / ADC2 | 28 | Motor 2 phase B current sense |
 | SOA_2 / ADC3 | 29 | Motor 2 phase A current sense |
 
-SPI1 (GPIO 10–13) and I2C0 (GPIO 16–17) are routed to headers and are usable as plain GPIO when not needed as buses.
+SPI1 (GPIO 10–13) and I2C0 (GPIO 16–17) are routed to headers and are usable as plain GPIO when not needed as buses. GPIO 24/25 are general GPIO but cannot do PWM (they overlap the LED PWM slice).
 
 ---
 

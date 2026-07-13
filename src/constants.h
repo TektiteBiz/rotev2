@@ -59,11 +59,23 @@ constexpr float VBUS_V = 12.0f;
 // GPIO4-7 are unused by the driver (previously EN, now hardwired) and free.
 constexpr uint32_t PIN_PHA_2 = 0, PIN_PHB_2 = 1, PIN_PHA_1 = 2, PIN_PHB_1 = 3;
 constexpr uint32_t PIN_LED_R = 8, PIN_LED_G = 9, PIN_LED_B = 14;
-constexpr uint32_t PIN_BTN_STOP = 19, PIN_BTN_GO = 20;
-constexpr uint32_t PIN_NSLEEP_1 = 21, PIN_NSLEEP_2 = 22;
+constexpr uint32_t PIN_BTN_STOP = 20, PIN_BTN_GO = 21;
+constexpr uint32_t PIN_NSLEEP_1 = 22, PIN_NSLEEP_2 = 23;
 constexpr uint32_t PIN_SOB_1 = 26, PIN_SOA_1 = 27, PIN_SOB_2 = 28,
                    PIN_SOA_2 = 29;
 constexpr uint32_t ADC_SOB_1 = 0, ADC_SOA_1 = 1, ADC_SOB_2 = 2, ADC_SOA_2 = 3;
 constexpr uint32_t PIN_LOOP_TIMING = 10;  // SPI1 SCK; bringup only
+
+// --- Buzzer (passive piezo, GPIO4) ---
+constexpr uint32_t PIN_BUZZ = 4;
+constexpr uint16_t BUZZ_MIN_HZ = 1000, BUZZ_MAX_HZ = 4000;
+
+// --- ADS1015 external ADC (I2C1, GPIO18/19) ---
+constexpr uint32_t PIN_I2C1_SDA = 18, PIN_I2C1_SCL = 19;
+constexpr float ADS1015_FSR_V = 4.096f;          // PGA full-scale range used for all channels
+constexpr float VBUS_DIV_HIGH_OHMS = 7300.0f;    // bus-voltage divider high side
+constexpr float VBUS_DIV_LOW_OHMS = 2200.0f;     // bus-voltage divider low side
+
+enum AdcChannel : uint8_t { ADC_AIN1 = 0, ADC_AIN2 = 1, ADC_AIN3 = 2 };
 
 }  // namespace rotev
