@@ -4,8 +4,18 @@
 using namespace rotev;
 
 // Basic hardware verification: enable/disable the drivers, log idle phase
-// currents, and confirm the LED/buttons work. No PWM is applied to the
-// motor windings beyond what the driver requires to acknowledge enable.
+// currents and bus voltage, confirm the LED/buttons/buzzer work. No PWM is
+// applied to the motor windings beyond what the driver requires to
+// acknowledge enable.
+
+static void playGoTune() {
+  const uint16_t notes[] = {1000, 1500, 2000};
+  for (uint16_t f : notes) {
+    buzzerOn(f);
+    delay(80);
+  }
+  buzzerOff();
+}
 
 void setup() {
   Serial.begin(115200);
@@ -21,9 +31,10 @@ void loop() {
   Serial.print(">motorCurrentA(MOTOR_1):"); Serial.print(motorCurrentA(MOTOR_1));
   Serial.print(",motorCurrentB(MOTOR_1):"); Serial.print(motorCurrentB(MOTOR_1));
   Serial.print(",motorCurrentA(MOTOR_2):"); Serial.print(motorCurrentA(MOTOR_2));
-  Serial.print(",motorCurrentB(MOTOR_2):"); Serial.println(motorCurrentB(MOTOR_2));
+  Serial.print(",motorCurrentB(MOTOR_2):"); Serial.print(motorCurrentB(MOTOR_2));
+  Serial.print(",busVoltage:"); Serial.println(busVoltage());
 
-  if (go)   ledColor(0, 255, 0);
+  if (go) { ledColor(0, 255, 0); playGoTune(); }
   if (stop) ledColor(255, 0, 0);
   delay(50);
 }
