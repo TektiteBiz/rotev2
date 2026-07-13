@@ -3,6 +3,7 @@
 #include "led.h"
 #include "button.h"
 #include "foc.h"
+#include "buzz.h"
 
 namespace rotev {
 
@@ -14,6 +15,7 @@ void begin() {
   hwInit();
   ledInit();
   focStart();
+  buzzInit();
 }
 
 void motorEnable(Motor m) {
@@ -44,6 +46,9 @@ void motorWriteVoltageAB(float va_volts, float vb_volts, Motor m) {
 }
 
 void setLagComp(bool on) { focSetLagComp(on); }
+
+void buzzerOn(uint16_t freq_hz) { buzzOn(freq_hz); }
+void buzzerOff() { buzzOff(); }
 
 void ledColor(uint8_t r, uint8_t g, uint8_t b) { ledSet(r, g, b); }
 bool buttonPressed(Button b) { return buttonRead(b); }
