@@ -11,18 +11,20 @@ Documentation must be written in README.md outlining each function and explainin
 ## MCU
 MCU: RP2354
 GPIO mappings: (GPIO #: label)
-- 0: PHA_2
-- 1: PHB_2
-- 2: PHA_1
-- 3: PHB_1
-- 4-7: unused (previously EN pins; EN is now hardwired HIGH, see Drivers)
+- 0: PWMA_2
+- 1: PWMB_2
+- 2: PWMA_1
+- 3: PWMB_1
+- 4: BUZZ
 - 8: LED.R
 - 9: LED.G
 - 14: LED.B
-- 19: BTN_STOP
-- 20: BTN_GO
-- 21: nSLEEP_1
-- 22: nSLEEP_2
+- 18: I2C1_SDA
+- 19: I2C1_SCL
+- 20: BTN_STOP
+- 21: BTN_GO
+- 22: nSLEEP_1
+- 23: nSLEEP_2
 - 26: SOB_1
 - 27: SOA_1
 - 28: SOB_2
@@ -38,17 +40,25 @@ nSLEEP is connected between each pair, so both drivers for motor 1 share nSLEEP_
 ## Buttons
 The buttons go HIGH when pressed, so need the internal pull-down. 
 
+## Buzzer
+There is a passive piezo buzzer with a range of 1k-4khz on the BUZZ pin, apply a 50% duty cycle and adjust frequency. Make this user facing so the user can turn on and off the buzzer and set the frequency.
+
 ## RGB LED
 The RGB LED will be controlled via PWM with the 3 pins. 
 
 ## Additional GPIOs
 GPIOs 10, 11, 12, and 13 are meant for use by the user, but will also be used during bringup (explained later). These pins are the SPI1 bus, which must be documented in the readme. GPIOs 16 and 17 are I2C0 and feature I2C pull-ups on the board and are also exposed (but not used for bringup) and also must be documented in README.md. These pins serve as busses for the user but can also be used as general GPIO and not exclusively for SPI/I2C. The mappings when being used as a bus are as follows:
+- 6, 7: General GPIO (PWM-capable)
 - 10: SCK
 - 11: MOSI
 - 12: MISO
 - 13: CS
 - 16: SDA
 - 17: SCL
+- 24, 25: General GPIO, cannot do PWM since overlaps with LED PWM slice
+
+## ADIS1015 ADC
+On I2C1 (GPIO 18/19) there is an ADS1015IRUGR ADC. AIN0 on this ADC is connected to bus voltage with a voltage divider with 7.3kohm on the high side and 2.2kohm on the low side. This needs to be sampled at ~1khz for the FOC loop inverse park. AIN1-3 are exposed to the user so consider how to display them to the user too.
 
 # FOC
 High frequency FOC will be implemented and run. The specifications are:
@@ -60,7 +70,6 @@ Implementation-wise, there must be
 - Center aligned PWM for SVPWM
 - No clarke transform is needed since the currents are already in alpha-beta frame
 - For park transform, assume the rotor is at the target position, and run PI control
-- For now assume 12V as the bus voltage for inverse park, in the future there will be an ADC though
 - Run PI with pole placement as follows:
 kP = BANDWIDTH * INDUCTANCE
 kI = BANDWIDTH * RESISTANCE
@@ -103,8 +112,6 @@ Enable the PI controllers but don't worry about lag compensation, simply do basi
 
 ### Phase 4: Full library
 Implement lag compensation and test S curves up to 100 rotations and 300rpm
-
-For the current 12V assumption make the code for inverse park correctly encapsulated so fixing it to use the ADC does not need changes in multiple spots.
 
 Document library use properly in README.md. Do everything with the consideration that this repository will be published as a platformio library.
 
