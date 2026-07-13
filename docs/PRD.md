@@ -93,7 +93,11 @@ Implement a tight loop with proper ADC sampling timing, proper center-aligned PW
 Enable & disable motor drivers, log current sensing, change RGB LED color when stop/go pressed, etc. - no motion, just reading the sensors and ensuring basic hardware functionality
 
 ### Phase 2: Open-loop control
-Do open-loop SVPWM with a voltage such that the phase current is 0.1A and spin the motors at 60RPM open-loop. Still log phase current and let it be graphed via arduino serial plotter. Should show up as two sine waves
+Do open-loop SVPWM with a voltage such that the phase current is 0.5A and spin the motors at 60RPM open-loop. Still log phase current and let it be graphed via arduino serial plotter. Should show up as two sine waves
+
+(Originally spec'd at 0.1A -- raised to 0.5A after bringup showed 0.1A doesn't give
+enough torque to overcome this motor's detent/static friction, so it just buzzes in
+place instead of rotating even with a correct startup ramp. See Known Pitfalls.)
 
 ### Phase 3: Simple closed-loop FOC
 Enable the PI controllers but don't worry about lag compensation, simply do basic FOC and allow setting the current and running S curves or simple constant velocity
