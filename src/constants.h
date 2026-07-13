@@ -43,8 +43,11 @@ constexpr float ISENSE_SCALE_B = -1.0f;
 
 // --- PWM / loop ---
 constexpr uint32_t PWM_HZ = 24000;
-// PWM output polarity is inverted (cfgEn): the active-HIGH phase is centred
-// around counter=TOP; counter=0 (IRQ) is in the stable freewheeling window.
+// Locked-antiphase drive (see Drivers section, PRD.md): EN is hardwired HIGH
+// on all 4 drivers (pull-up, no GPIO), PH is PWMed at duty=(1+d)/2. Current
+// is always actively driven (never coasting), so there's no freewheeling
+// window; counter=0 (IRQ) is still the correct ADC sample point since it's
+// the fixed trough of the center-aligned carrier, symmetric with counter=TOP.
 // ADC samples (8 µs total) start at IRQ and finish well before the first edge.
 constexpr int ADC_OVERSAMPLE = 2;
 
@@ -52,8 +55,9 @@ constexpr int ADC_OVERSAMPLE = 2;
 constexpr float VBUS_V = 12.0f;
 
 // --- GPIO map ---
-constexpr uint32_t PIN_ENA_2 = 0, PIN_PHA_2 = 1, PIN_ENB_2 = 2, PIN_PHB_2 = 3;
-constexpr uint32_t PIN_ENA_1 = 4, PIN_PHA_1 = 5, PIN_ENB_1 = 6, PIN_PHB_1 = 7;
+// PHA_2/PHB_2 share PWM slice 0 (channels A/B); PHA_1/PHB_1 share slice 1.
+// GPIO4-7 are unused by the driver (previously EN, now hardwired) and free.
+constexpr uint32_t PIN_PHA_2 = 0, PIN_PHB_2 = 1, PIN_PHA_1 = 2, PIN_PHB_1 = 3;
 constexpr uint32_t PIN_LED_R = 8, PIN_LED_G = 9, PIN_LED_B = 14;
 constexpr uint32_t PIN_BTN_STOP = 19, PIN_BTN_GO = 20;
 constexpr uint32_t PIN_NSLEEP_1 = 21, PIN_NSLEEP_2 = 22;

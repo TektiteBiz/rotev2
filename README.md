@@ -133,14 +133,11 @@ enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 
 | Signal | GPIO | Notes |
 |---|---|---|
-| ENA_2 | 0 | Motor 2 phase A enable (DRV8874, PH/EN mode) |
-| PHA_2 | 1 | Motor 2 phase A direction |
-| ENB_2 | 2 | Motor 2 phase B enable |
-| PHB_2 | 3 | Motor 2 phase B direction |
-| ENA_1 | 4 | Motor 1 phase A enable |
-| PHA_1 | 5 | Motor 1 phase A direction |
-| ENB_1 | 6 | Motor 1 phase B enable |
-| PHB_1 | 7 | Motor 1 phase B direction |
+| PHA_2 | 0 | Motor 2 phase A PWM (DRV8874, locked-antiphase; EN hardwired HIGH) |
+| PHB_2 | 1 | Motor 2 phase B PWM |
+| PHA_1 | 2 | Motor 1 phase A PWM |
+| PHB_1 | 3 | Motor 1 phase B PWM |
+| — | 4–7 | Unused by the driver (previously EN, now hardwired); free GPIO |
 | LED_R | 8 | Red, active-low PWM |
 | LED_G | 9 | Green, active-low PWM |
 | SPI1_SCK / LOOP_TIMING | 10 | SPI1 SCK; also bringup loop-timing pin |

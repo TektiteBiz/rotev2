@@ -11,14 +11,11 @@ Documentation must be written in README.md outlining each function and explainin
 ## MCU
 MCU: RP2354
 GPIO mappings: (GPIO #: label)
-- 0: ENA_2
-- 1: PHA_2
-- 2: ENB_2
-- 3: PHB_2
-- 4: ENA_1
-- 5: PHA_1
-- 6: ENB_1
-- 7: PHB_1
+- 0: PHA_2
+- 1: PHB_2
+- 2: PHA_1
+- 3: PHB_1
+- 4-7: unused (previously EN pins; EN is now hardwired HIGH, see Drivers)
 - 8: LED.R
 - 9: LED.G
 - 14: LED.B
@@ -32,7 +29,9 @@ GPIO mappings: (GPIO #: label)
 - 29: SOA_2
 
 ## Drivers
-There are two stepper motors (motor 1 and motor 2). Each motor has phases A and B. Each phase has a DRV8874 motor driver set up with PH/EN mode, and a current sensor which is a INA186A3 with a 15mohm shunt and with REF biased to 1.65V. For example, ENB_2 is the EN pin on the B phase driver for motor 2. SOB_1 is the current output of the B phase of motor 1.
+There are two stepper motors (motor 1 and motor 2). Each motor has phases A and B. Each phase has a DRV8874 motor driver set up with PH/EN mode, and a current sensor which is a INA186A3 with a 15mohm shunt and with REF biased to 1.65V. SOB_1 is the current output of the B phase of motor 1.
+
+Each driver's EN pin is hardwired HIGH (pull-up on the PCB, no MCU connection) rather than GPIO-controlled. PH is driven by PWM (locked-antiphase: duty=(1+d)/2, d in [-1,1]), so current is always actively driven through the H-bridge rather than coasting -- this is the decay behavior FOC needs. For example, PHB_2 is the PWM pin on the B phase driver for motor 2. This replaced an earlier sign-magnitude scheme (EN-PWM, PH as static direction) that coasted instead of actively decaying; see Known Pitfalls.
 
 nSLEEP is connected between each pair, so both drivers for motor 1 share nSLEEP_1 and both drivers for motor 2 share nSLEEP_2
 
@@ -139,3 +138,17 @@ print the raw peripheral registers (e.g. `pwm_hw->slice[N].csr`, `.cc`) directly
 is what actually found the enable-register bug above, after multiple plausible-sounding
 software theories (LED slice aliasing, brownout/reset loops, hardware damage) were all
 individually ruled out by hardware evidence and would have kept wasting time otherwise.
+
+### `gpio_set_function(pin, GPIO_FUNC_PWM)` silently overrides an earlier SIO setup
+`cfgSlice()`/`cfgEn()`-style helpers that call `gpio_set_function(pin, GPIO_FUNC_PWM)` change
+*that specific pin's* mux, independent of anything `hwInit()` did earlier (`gpio_init` +
+`gpio_set_dir` + `gpio_put`). During the first locked-antiphase experiment, a helper was reused
+for its slice-init side effect on a pin that was supposed to stay a static GPIO output (motor 1's
+EN pin, meant to be held HIGH) — but the helper also flipped that pin's own function to PWM with
+its compare register left at 0 (permanent 0% duty), silently overriding the earlier `gpio_put(...,
+1)`. Symptom: driver outputs stayed Hi-Z (disabled) the whole time — felt like inert detent
+"braking" under hand rotation, not actual holding torque, with current telemetry reading ~0. Fix:
+never assume a pin keeps whatever GPIO function `hwInit()` gave it — if a later init step touches
+that pin's slice for any reason, explicitly re-assert the function/level you actually want
+afterward, or (better, as done in the final design) restructure so nothing ever needs to touch a
+pin's function twice with conflicting intents.
