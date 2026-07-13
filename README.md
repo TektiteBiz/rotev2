@@ -103,6 +103,17 @@ void ledColor(uint8_t r, uint8_t g, uint8_t b);
 
 Sets the RGB LED. The LED is **active-low**, driven by PWM. Values are 0–255 (255 = full brightness, 0 = off).
 
+### Buzzer
+
+```cpp
+void buzzerOn(uint16_t freq_hz);
+void buzzerOff();
+```
+
+Drives the passive piezo buzzer on GPIO4 at 50% duty cycle. `freq_hz` is clamped to 1000-4000 Hz.
+Calling `buzzerOn()` again while already sounding retunes the frequency without needing to call
+`buzzerOff()` first.
+
 ### Buttons
 
 ```cpp
@@ -120,11 +131,27 @@ float motorCurrentB(Motor m);
 
 Returns the most recent phase A or phase B current reading (amps) from the FOC loop's ADC snapshot.
 
+### External ADC (Bus Voltage + User Channels)
+
+```cpp
+float adcRead(AdcChannel ch);  // ADC_AIN1 / ADC_AIN2 / ADC_AIN3
+float busVoltage();
+```
+
+An ADS1015 I2C ADC (on the internal I2C1 bus, GPIO18/19 — not user-facing) samples the motor bus
+voltage (via a 7.3kΩ/2.2kΩ divider) and 3 user-facing channels (AIN1-3) in the background, fully
+automatically — there is nothing to call or poll. A repeating timer started by `begin()` round-robins
+the 4 channels, weighted so bus voltage updates at roughly 1kHz (needed internally by the FOC loop's
+inverse-Park) while each user channel updates at roughly 150-250Hz (ample for telemetry/display use).
+`adcRead()` and `busVoltage()` return the most recently cached sample in volts; both are
+non-blocking.
+
 ### Enums
 
 ```cpp
 enum Motor  : uint8_t { MOTOR_1 = 0, MOTOR_2 = 1 };
 enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
+enum AdcChannel : uint8_t { ADC_AIN1 = 0, ADC_AIN2 = 1, ADC_AIN3 = 2 };
 ```
 
 ---
@@ -190,7 +217,9 @@ Uq += ωe * Ld * Id
 Ud -= ωe * Lq * Iq
 ```
 
-Bus voltage is assumed to be **12 V** (used behind the inverse-Park transform to normalize duty cycle). This will be replaced by a live ADC read in a future revision.
+Bus voltage is read live from the ADS1015 (`busVoltage()`, ~1kHz) and used behind the inverse-Park
+transform to normalize duty cycle. A nominal 12V fallback is used only until the first real ADC
+sample lands at boot.
 
 ---
 
