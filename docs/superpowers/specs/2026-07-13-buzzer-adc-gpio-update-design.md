@@ -32,6 +32,7 @@ module handles the ADS1015).
 | Vbus → FOC handoff | Same spinlock pattern as existing setpoint/telemetry cross-core state | Reuses proven mechanism; `controlStep` reads live `s_vbus` instead of constant `VBUS_V`. |
 | Vbus startup fallback | Seed cache with nominal `VBUS_V` constant before first real sample | No special-cased startup logic needed in FOC; degrades gracefully. |
 | User ADC API | `float adcRead(AdcChannel ch)`, returns cached volts, non-blocking | Matches existing telemetry-getter pattern (`motorCurrentA/B`). |
+| Bus voltage API | `float busVoltage()` also exposed publicly | Needed by Phase 1 bringup to display/compare Vbus against a multimeter reading; also generally useful telemetry for any user sketch. |
 | Buzzer API | `buzzerOn(uint16_t freq_hz)` / `buzzerOff()` | Frequency clamped [1000,4000]Hz; calling `buzzerOn` again while sounding retunes on the fly. |
 
 ## Architecture
@@ -88,6 +89,7 @@ of `VBUS_V`. `VBUS_V` remains defined as the pre-ADC-sample fallback default.
 void buzzerOn(uint16_t freq_hz);   // clamped to [1000, 4000] Hz, 50% duty
 void buzzerOff();
 float adcRead(AdcChannel ch);      // ADC_AIN1/2/3, last cached sample in volts, non-blocking
+float busVoltage();                // last cached Vbus sample in volts, non-blocking
 ```
 `AdcChannel` is a new enum in `constants.h`.
 
@@ -106,6 +108,22 @@ float adcRead(AdcChannel ch);      // ADC_AIN1/2/3, last cached sample in volts,
   new **Buzzer** section (range, API, 50% duty note), new **ADC** section
   documenting `adcRead()`, the 3 user channels, sample-rate expectations, and
   that bus-voltage sensing is automatic/internal (no user action needed).
+
+## Bringup Impact (Phase 1)
+
+Phase 1 (`bringup/phase1_hw.h`) is the first sketch to exercise the new hardware, so it gains two
+additions:
+
+- **Buzzer smoke test on GO:** pressing GO (in addition to turning the LED green) plays a short
+  fixed tune via `buzzerOn`/`buzzerOff` calls (a few notes within the 1-4kHz range, each held
+  briefly then silenced) before returning to the idle loop. This exercises the buzzer PWM path and
+  gives an audible pass/fail signal without needing a scope.
+- **Bus voltage telemetry:** the periodic serial print (alongside the four `motorCurrentA/B`
+  traces) adds a fifth value, `rotev::busVoltage()`, so the operator can visually confirm it
+  against a multimeter reading of the 12V rail.
+
+`docs/BRINGUP.md` Phase 1 section (What to watch / Pass criteria / Failure modes table) is updated
+to describe both additions.
 
 ## Open Assumptions to Confirm on Hardware
 - ADS1015 I2C1 bus has adequate pull-ups on the PCB (dedicated bus, assumed

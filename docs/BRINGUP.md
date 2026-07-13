@@ -102,22 +102,26 @@ cd bringup && pio run -e phase1 -t upload && pio device monitor
 
 **What to watch.**
 
-Open the Arduino Serial Plotter. Four traces appear — `motorCurrentA(MOTOR_1)`,
-`motorCurrentB(MOTOR_1)`, `motorCurrentA(MOTOR_2)`, `motorCurrentB(MOTOR_2)` — printed at 50 ms
-intervals. Because no current command is applied, all four should hover near 0 A, with only the
-small ADC offset bias visible (the INA186A3 reference is 1.65 V; the ADC reads this as 0 A).
-With the motor unpowered the traces may wander by a few milliamps due to common-mode and thermal
-noise; this is normal.
+Open the Arduino Serial Plotter. Five traces appear — `motorCurrentA(MOTOR_1)`,
+`motorCurrentB(MOTOR_1)`, `motorCurrentA(MOTOR_2)`, `motorCurrentB(MOTOR_2)`, and
+`busVoltage()` — printed at 50 ms intervals. Because no current command is applied, all four
+current traces should hover near 0 A, with only the small ADC offset bias visible (the INA186A3
+reference is 1.65 V; the ADC reads this as 0 A). With the motor unpowered the traces may wander by
+a few milliamps due to common-mode and thermal noise; this is normal. `busVoltage()` should read
+close to the actual 12 V rail (measure with a multimeter and compare).
 
-Press **GO** (GPIO20). The LED should turn green. Press **STOP** (GPIO19). The LED should turn red.
+Press **GO** (GPIO21). The LED should turn green, and the buzzer should play a short fixed tune
+(a few notes, each within 1-4kHz, held briefly then silenced) via `buzzerOn`/`buzzerOff` — this is
+the audible smoke test for the buzzer PWM path. Press **STOP** (GPIO20). The LED should turn red.
 
-With a multimeter, measure `nSLEEP_1` (GPIO21) and `nSLEEP_2` (GPIO22). Both should be logic
+With a multimeter, measure `nSLEEP_1` (GPIO22) and `nSLEEP_2` (GPIO23). Both should be logic
 HIGH (~3.3 V) after `motorEnable()` runs in `setup()`.
 
 **Pass criteria.**
 
 - All four current traces at idle: within ±few mA of 0 A.
-- GO button → LED green; STOP button → LED red.
+- `busVoltage()` reads within a reasonable tolerance (e.g. ±0.5 V) of the multimeter-measured rail.
+- GO button → LED green + audible tune; STOP button → LED red.
 - `nSLEEP_1` and `nSLEEP_2` both measure logic HIGH after reset.
 
 **Failure modes and knobs.**
@@ -129,6 +133,8 @@ HIGH (~3.3 V) after `motorEnable()` runs in `setup()`.
 | Current traces are offset by ±0.1 A or more | `VREF` — check `ADC_VREF` in `src/constants.h`; verify 1.65 V on the INA186A3 REF pins |
 | Current traces show wrong polarity (positive when negative expected) | `ISENSE-SIGN` — swap SOA/SOB in `src/adc.cpp` or negate the result |
 | `nSLEEP` pins remain low | Driver IC power supply missing; check 12 V rail and level-shifter |
+| No tune plays on GO, or tune is inaudible/distorted | Check `PIN_BUZZ` (GPIO4) wiring; verify buzzer frequency is within its 1-4kHz rated range |
+| `busVoltage()` reads 0, wildly wrong, or never updates | Check I2C1 (GPIO18/19) wiring/pull-ups to the ADS1015; verify the divider resistors (7.3k/2.2k) |
 
 ---
 
@@ -339,8 +345,9 @@ until all boxes are checked.
 
 ### Hardware pass criteria
 
-- [ ] **Phase 1:** All four idle current traces within ±few mA of 0 A; GO→green, STOP→red;
-      nSLEEP_1 and nSLEEP_2 both measure logic HIGH.
+- [ ] **Phase 1:** All four idle current traces within ±few mA of 0 A; `busVoltage()` within
+      ±0.5V of multimeter reading; GO→green + audible tune, STOP→red; nSLEEP_1 and nSLEEP_2 both
+      measure logic HIGH.
 - [ ] **Phase 2:** Two sinusoidal currents at ~50 Hz electrical (60 RPM × 50/60), ~90° apart,
       amplitude ~0.1 A; motor rotates smoothly at 60 RPM; GPIO10 pulse period ~41.6 µs, width
       within budget.
