@@ -11,6 +11,8 @@ void  motorWriteVoltageAB(float va_volts, float vb_volts, Motor m);
 void  setLagComp(bool on);  // enable/disable lag-compensation (cross-coupling decoupling)
 void  buzzerOn(uint16_t freq_hz);  // clamped to [1000,4000] Hz, 50% duty
 void  buzzerOff();
+float adcRead(AdcChannel ch);  // ADC_AIN1/2/3, last cached sample in volts, non-blocking
+float busVoltage();            // last cached bus voltage in volts, non-blocking
 void  ledColor(uint8_t r, uint8_t g, uint8_t b);
 bool  buttonPressed(Button b);
 float motorCurrentA(Motor m);

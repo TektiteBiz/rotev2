@@ -4,6 +4,7 @@
 #include "button.h"
 #include "foc.h"
 #include "buzz.h"
+#include "adc_ext.h"
 
 namespace rotev {
 
@@ -16,6 +17,7 @@ void begin() {
   ledInit();
   focStart();
   buzzInit();
+  adcExtInit();
 }
 
 void motorEnable(Motor m) {
@@ -49,6 +51,8 @@ void setLagComp(bool on) { focSetLagComp(on); }
 
 void buzzerOn(uint16_t freq_hz) { buzzOn(freq_hz); }
 void buzzerOff() { buzzOff(); }
+float adcRead(AdcChannel ch) { return adcExtUser(ch); }
+float busVoltage() { return adcExtVbus(); }
 
 void ledColor(uint8_t r, uint8_t g, uint8_t b) { ledSet(r, g, b); }
 bool buttonPressed(Button b) { return buttonRead(b); }
