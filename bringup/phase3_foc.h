@@ -15,7 +15,7 @@ using namespace rotev;
 // (Phase 2 doesn't need this -- open-loop voltage control never looks at
 // measured current to decide its output, so it can't be fed a bad feedback
 // projection the way the closed loop can.)
-static constexpr float RPM = 50.0f;
+static constexpr float RPM = 300.0f;
 static constexpr float TARGET_AMPS = 0.5f;
 static constexpr float ALIGN_TIME_S = 0.5f;
 static constexpr float RAMP_TIME_S = 2.0f;
@@ -28,7 +28,7 @@ static uint32_t last_print_us = 0;
 void setup() {
   Serial.begin(115200);
   begin();
-  setLagComp(false);  // Phase 3: no lag comp
+  setLagComp(true);  // Phase 3: no lag comp
   motorEnable(MOTOR_1);
   last_us = last_print_us = micros();
 }

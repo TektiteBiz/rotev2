@@ -1,4 +1,5 @@
 #include "foc.h"
+#include <cmath>
 #include "pwm.h"
 #include "adc.h"
 #include "hw.h"
@@ -80,6 +81,19 @@ static void controlStep(Motor m, AB i) {
     if (lag) {
       uq += we * PHASE_L * dq.d;
       ud -= we * PHASE_L * dq.q;
+    }
+    // PI outputs and the lag-comp feedforward are each bounded individually,
+    // but their sum can exceed the bus voltage circle; inversePark's per-phase
+    // duty clamp then clips ud/uq non-proportionally, distorting the dq split.
+    // Prioritize ud (holds id at 0) over uq: letting id drift nonzero would
+    // add uncontrolled phase current beyond IMAX_A, so derate iq instead.
+    float ud_mag = fabsf(ud);
+    if (ud_mag > VBUS_V) {
+      ud *= VBUS_V / ud_mag;
+      uq = 0.0f;
+    } else {
+      float uq_budget = sqrtf(VBUS_V * VBUS_V - ud * ud);
+      if (fabsf(uq) > uq_budget) uq = (uq < 0.0f ? -uq_budget : uq_budget);
     }
   }
 
