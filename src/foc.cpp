@@ -17,8 +17,6 @@ struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; bool enabled; b
 static volatile Setpoint s_sp[2]   = {{0,0,0,false,false,false},{0,0,0,false,false,false}};
 static volatile AB       s_tel[2]  = {{0,0},{0,0}};
 static PIState  s_pid[2], s_piq[2];
-static OmegaEst s_omega[2];
-static volatile bool s_lagcomp = false;
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
 // Pre-computed duties applied at the very start of the next ISR invocation,
@@ -38,17 +36,15 @@ static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
 static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   float vbus = adcExtVbus();
   Setpoint sp;
-  bool lag;
   uint32_t irq = spin_lock_blocking(s_lock);
   sp.theta_mech = s_sp[m].theta_mech;
   sp.iq_cmd     = s_sp[m].iq_cmd;
   sp.enabled    = s_sp[m].enabled;
   sp.openloop   = s_sp[m].openloop;
-  lag           = s_lagcomp;
   spin_unlock(s_lock, irq);
 
   if (!sp.enabled) {
-    piReset(s_pid[m]); piReset(s_piq[m]); omegaReset(s_omega[m]);
+    piReset(s_pid[m]); piReset(s_piq[m]);
     s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
     return;
   }
@@ -76,17 +72,12 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     ud = 0.0f;
     uq = sp.iq_cmd;
   } else {
-    float we = omegaStep(s_omega[m], theta_e, dt, 0.05f);
     DQ dq = park(i, theta_e);
     uq = piStep(s_piq[m], sp.iq_cmd - dq.q, KP, KI, dt, vbus);
     ud = piStep(s_pid[m], 0.0f      - dq.d, KP, KI, dt, vbus);
-    if (lag) {
-      uq += we * PHASE_L * dq.d;
-      ud -= we * PHASE_L * dq.q;
-    }
-    // PI outputs and the lag-comp feedforward are each bounded individually,
-    // but their sum can exceed the bus voltage circle; inversePark's per-phase
-    // duty clamp then clips ud/uq non-proportionally, distorting the dq split.
+    // ud and uq are each bounded individually by piStep, but their vector sum
+    // can exceed the bus voltage circle; inversePark's per-phase duty clamp
+    // then clips ud/uq non-proportionally, distorting the dq split.
     // Prioritize ud (holds id at 0) over uq: letting id drift nonzero would
     // add uncontrolled phase current beyond IMAX_A, so derate iq instead.
     float ud_mag = fabsf(ud);
@@ -141,7 +132,7 @@ void focStart() {
   s_lock = spin_lock_init(spin_lock_claim_unused(true));
   pwmInit();
   adcInit();
-  for (int m = 0; m < 2; ++m) { piReset(s_pid[m]); piReset(s_piq[m]); omegaReset(s_omega[m]); }
+  for (int m = 0; m < 2; ++m) { piReset(s_pid[m]); piReset(s_piq[m]); }
   multicore_launch_core1(core1Entry);
 }
 
@@ -176,12 +167,6 @@ void focSetVoltageAB(Motor m, float va_duty, float vb_duty, bool enabled) {
   s_sp[m].vb_duty = vb_duty;
   s_sp[m].enabled = enabled;
   s_sp[m].ab_mode = true;
-  spin_unlock(s_lock, irq);
-}
-
-void focSetLagComp(bool on) {
-  uint32_t irq = spin_lock_blocking(s_lock);
-  s_lagcomp = on;
   spin_unlock(s_lock, irq);
 }
 

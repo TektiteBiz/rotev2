@@ -52,19 +52,6 @@ float __not_in_flash_func(piStep)(PIState& s, float error, float kp, float ki, f
 
 float electricalAngle(float theta_mech) { return wrapAngle(theta_mech * (float)POLE_PAIRS); }
 
-void omegaReset(OmegaEst& s) { s.prev_theta_e = 0.0f; s.w_filt = 0.0f; s.primed = false; }
-
-float omegaStep(OmegaEst& s, float theta_e, float dt, float alpha) {
-  if (!s.primed) { s.prev_theta_e = theta_e; s.primed = true; return 0.0f; }
-  // theta_e is wrapped to (-PI, PI], so a plain difference across the wrap
-  // boundary would show a false ~2*PI jump -- wrap the delta itself to the
-  // shortest angular distance instead.
-  float raw = wrapAngle(theta_e - s.prev_theta_e) / dt;
-  s.prev_theta_e = theta_e;
-  s.w_filt += alpha * (raw - s.w_filt);
-  return s.w_filt;
-}
-
 float countsToAmps(uint16_t counts) {
   float v = ((float)counts / ADC_MAX) * ADC_VREF;
   return (v - ISENSE_REF_V) / VOLTS_PER_AMP;

@@ -19,11 +19,6 @@ float piStep(PIState& s, float error, float kp, float ki, float dt, float out_li
 // Electrical angle from mechanical angle (scaled by POLE_PAIRS).
 float electricalAngle(float theta_mech);
 
-// First-order LPF electrical speed estimator.
-struct OmegaEst { float prev_theta_e; float w_filt; bool primed; };
-void  omegaReset(OmegaEst& s);
-float omegaStep(OmegaEst& s, float theta_e, float dt, float alpha);
-
 // ADC current sense conversion and clamping.
 float    countsToAmps(uint16_t counts);
 float    clampCurrent(float amps);

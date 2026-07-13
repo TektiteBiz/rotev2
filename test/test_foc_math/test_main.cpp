@@ -63,13 +63,6 @@ void test_electrical_angle_stays_bounded_for_large_input() {
   float e = electricalAngle(1000.0f);
   TEST_ASSERT_TRUE(e > -(float)M_PI && e <= (float)M_PI);
 }
-void test_omega_estimator_constant_velocity() {
-  OmegaEst s; omegaReset(s);
-  float dt = 1.0f/12000.0f, w = 0.0f;
-  float theta = 0.0f;
-  for (int i = 0; i < 500; ++i) { theta += 100.0f*dt; w = omegaStep(s, theta, dt, 0.05f); }
-  TEST_ASSERT_FLOAT_WITHIN(1.0f, 100.0f, w); // converges toward 100 rad/s
-}
 void test_counts_to_amps_midscale_is_zero() {
   // 1.65V -> counts = 1.65/3.3*4095 = 2047.5
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, countsToAmps(2048));
@@ -85,10 +78,6 @@ void test_clamp_current_limits() {
 void test_led_duty_active_low() {
   TEST_ASSERT_EQUAL_UINT16(0, ledDuty(255, 3124));     // full on -> pin low
   TEST_ASSERT_EQUAL_UINT16(3124, ledDuty(0, 3124));    // off -> pin high
-}
-void test_omega_first_call_returns_zero() {
-  OmegaEst s; omegaReset(s);
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, omegaStep(s, 1.0f, 0.001f, 0.1f));
 }
 void test_led_duty_midpoint() {
   // 128*3124/255 = 1568 (truncated); active-low duty = top - 1568
@@ -153,12 +142,10 @@ int main() {
   RUN_TEST(test_pi_reset_clears_integrator);
   RUN_TEST(test_electrical_angle_scales_by_pole_pairs);
   RUN_TEST(test_electrical_angle_stays_bounded_for_large_input);
-  RUN_TEST(test_omega_estimator_constant_velocity);
   RUN_TEST(test_counts_to_amps_midscale_is_zero);
   RUN_TEST(test_counts_to_amps_one_amp);
   RUN_TEST(test_clamp_current_limits);
   RUN_TEST(test_led_duty_active_low);
-  RUN_TEST(test_omega_first_call_returns_zero);
   RUN_TEST(test_led_duty_midpoint);
   RUN_TEST(test_buzz_clamp_within_range);
   RUN_TEST(test_buzz_clamp_below_min);

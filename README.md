@@ -4,7 +4,6 @@ PlatformIO/Arduino library for the **Tektite RotEv2** board (RP2354). Provides d
 
 - Open-loop position control (theta_rad → inverse Park → PWM; no Clarke — phase currents are already in the αβ frame)
 - Closed-loop current control (PI regulators, pole-placement tuned)
-- Lag-compensation (cross-coupling decoupling, optional)
 - Active-high buttons, active-low RGB LED
 
 ---
@@ -82,18 +81,6 @@ void motorWrite(float theta_rad, float amps, Motor m);
 - `motorEnable(m)` — releases nSLEEP and re-applies the last commanded setpoint. **Caveat:** the stored setpoint is the last value passed to `motorWrite()`, which defaults to 0 A at startup. To guarantee starting from rest, call `motorWrite(theta, 0.0f, m)` before `motorEnable(m)`.
 - `motorDisable(m)` — zeros the current command and asserts nSLEEP.
 - `motorWrite(theta_rad, amps, m)` — sets the position angle (radians, any range) and the q-axis (torque) current command in amps. The d-axis current setpoint is held at 0. `amps` is clamped to ±1.1 A (sensor range).
-
-### Lag Compensation
-
-```cpp
-void setLagComp(bool on);
-```
-
-Enables or disables cross-coupling (lag-compensation) decoupling in the FOC loop:
-- Uq += ωe · Ld · Id
-- Ud -= ωe · Lq · Iq
-
-Defaults to disabled at startup.
 
 ### LED
 
@@ -209,12 +196,6 @@ Pole-placement design: current loop bandwidth = 1000 rad/s.
 ```
 kP = BANDWIDTH * L = 1000 * 0.0035 = 3.5
 kI = BANDWIDTH * R = 1000 * 3.5    = 3500
-```
-
-Lag-compensation (when enabled via `setLagComp(true)`):
-```
-Uq += ωe * Ld * Id
-Ud -= ωe * Lq * Iq
 ```
 
 Bus voltage is read live from the ADS1015 (`busVoltage()`, ~1kHz) and used behind the inverse-Park

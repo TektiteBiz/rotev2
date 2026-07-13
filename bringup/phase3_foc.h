@@ -28,7 +28,6 @@ static uint32_t last_print_us = 0;
 void setup() {
   Serial.begin(115200);
   begin();
-  setLagComp(true);  // Phase 3: no lag comp
   motorEnable(MOTOR_1);
   last_us = last_print_us = micros();
 }

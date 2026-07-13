@@ -13,7 +13,6 @@ static uint32_t last_us = 0;
 void setup() {
   Serial.begin(115200);
   begin();
-  setLagComp(true);  // Phase 4: enable lag compensation
   motorEnable(MOTOR_1);
   last_us = micros();
 }

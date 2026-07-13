@@ -50,8 +50,6 @@ void motorWriteVoltageAB(float va_volts, float vb_volts, Motor m) {
   focSetVoltageAB(m, va_volts / VBUS_V, vb_volts / VBUS_V, s_en[m]);
 }
 
-void setLagComp(bool on) { focSetLagComp(on); }
-
 void buzzerOn(uint16_t freq_hz) { buzzOn(freq_hz); }
 void buzzerOff() { buzzOff(); }
 float adcRead(AdcChannel ch) { return adcExtUser(ch); }

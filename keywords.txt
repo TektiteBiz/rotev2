@@ -7,7 +7,6 @@ begin	KEYWORD2
 motorEnable	KEYWORD2
 motorDisable	KEYWORD2
 motorWrite	KEYWORD2
-setLagComp	KEYWORD2
 ledColor	KEYWORD2
 buttonPressed	KEYWORD2
 motorCurrentA	KEYWORD2
