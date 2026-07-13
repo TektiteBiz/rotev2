@@ -34,7 +34,7 @@ static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
 // i is pre-sampled at the start of the ISR, before any pwmSetPhase call,
 // so both ADC channels land within ~8 µs of counter=TOP (well before the
 // LOW→HIGH switching edge whose timing depends on duty cycle).
-static void controlStep(Motor m, AB i) {
+static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   Setpoint sp;
   bool lag;
   uint32_t irq = spin_lock_blocking(s_lock);

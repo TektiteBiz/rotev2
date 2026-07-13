@@ -7,7 +7,7 @@
 namespace rotev {
 
 void hwInit() {
-  set_sys_clock_khz(150000, true);   // 150 MHz stock; overclock target tuned in bringup
+  set_sys_clock_khz(200000, true);   // raised from 150000 to 200000: extra ISR timing margin for controlStep
 
   // nSLEEP pins as outputs, low (driver pairs asleep until motorEnable()).
   // PH pins are configured as PWM outputs by pwmInit() in focStart(), not

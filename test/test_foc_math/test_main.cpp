@@ -53,7 +53,15 @@ void test_pi_reset_clears_integrator() {
 }
 
 void test_electrical_angle_scales_by_pole_pairs() {
-  TEST_ASSERT_FLOAT_WITHIN(1e-4, 50.0f, electricalAngle(1.0f));
+  // theta_mech * POLE_PAIRS = 50 rad, wrapped to (-PI, PI]: 50 - 8*2*PI.
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 50.0f - 8.0f * 2.0f * (float)M_PI, electricalAngle(1.0f));
+}
+void test_electrical_angle_stays_bounded_for_large_input() {
+  // Large accumulated mechanical angle (e.g. late in a multi-rotation
+  // profile) must not be fed unbounded into sinf/cosf -- see foc_math.cpp
+  // wrapAngle().
+  float e = electricalAngle(1000.0f);
+  TEST_ASSERT_TRUE(e > -(float)M_PI && e <= (float)M_PI);
 }
 void test_omega_estimator_constant_velocity() {
   OmegaEst s; omegaReset(s);
@@ -98,6 +106,7 @@ int main() {
   RUN_TEST(test_pi_antiwindup_stops_integrating_when_saturated);
   RUN_TEST(test_pi_reset_clears_integrator);
   RUN_TEST(test_electrical_angle_scales_by_pole_pairs);
+  RUN_TEST(test_electrical_angle_stays_bounded_for_large_input);
   RUN_TEST(test_omega_estimator_constant_velocity);
   RUN_TEST(test_counts_to_amps_midscale_is_zero);
   RUN_TEST(test_counts_to_amps_one_amp);

@@ -3,6 +3,7 @@
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
 #include "hardware/clocks.h"
+#include "pico.h"
 
 namespace rotev {
 
@@ -52,7 +53,7 @@ unsigned pwmMasterSlice() { return pwm_gpio_to_slice_num(PIN_PHA_2); }
 // PH is PWMed at duty=(1+duty_signed)/2, so current is always actively
 // driven through the H-bridge (never coasting) -- the decay behavior FOC
 // needs.
-void pwmSetPhase(uint32_t ph_pin, float duty_signed) {
+void __not_in_flash_func(pwmSetPhase)(uint32_t ph_pin, float duty_signed) {
   float d = duty_signed;
   if (d > 1.0f) d = 1.0f;
   if (d < -1.0f) d = -1.0f;
