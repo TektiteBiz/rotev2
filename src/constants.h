@@ -51,7 +51,7 @@ constexpr uint32_t PWM_HZ = 24000;
 // ADC samples (8 µs total) start at IRQ and finish well before the first edge.
 constexpr int ADC_OVERSAMPLE = 2;
 
-// --- Bus voltage (future: from ADC) ---
+// --- Bus voltage (startup fallback; live value comes from the ADS1015, see adc_ext.*) ---
 constexpr float VBUS_V = 12.0f;
 
 // --- GPIO map ---

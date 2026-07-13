@@ -71,7 +71,7 @@ module handles the ADS1015).
     from the caller's perspective (the alarm fires independently of user code).
 - Round-robin sequence: `AIN0, AIN1, AIN0, AIN2, AIN0, AIN3, ...` (AIN0 every
   other slot = 2 of every 3 total slots across the 3-user-channel cycle).
-- Counts→volts: `V = counts * (4.096 / 2047)` (single-ended 12-bit, ±4.096V FS
+- Counts→volts: `V = counts * (4.096 / 2048)` (single-ended 12-bit, ±4.096V FS
   in the ADS1015's 12-bit-left-justified single-ended convention).
 - Bus voltage: `Vbus = adcExtVbus_divider_out * (7.3+2.2)/2.2` (undo the
   voltage divider) before caching into `s_vbus`.

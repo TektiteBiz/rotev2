@@ -15,9 +15,12 @@ static bool  s_en[2]    = {false,false};
 void begin() {
   hwInit();
   ledInit();
-  focStart();
   buzzInit();
   adcExtInit();
+  // adcExtInit() must run before focStart(): focStart() launches core1,
+  // which immediately starts calling adcExtVbus() every control cycle, and
+  // that call needs adc_ext's spinlock/cache already initialized.
+  focStart();
 }
 
 void motorEnable(Motor m) {
