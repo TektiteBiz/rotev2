@@ -2,6 +2,7 @@
 #include <cmath>
 #include "pwm.h"
 #include "adc.h"
+#include "adc_ext.h"
 #include "hw.h"
 #include "debug.h"
 #include "hardware/pwm.h"
@@ -35,6 +36,7 @@ static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
 // so both ADC channels land within ~8 µs of counter=TOP (well before the
 // LOW→HIGH switching edge whose timing depends on duty cycle).
 static void __not_in_flash_func(controlStep)(Motor m, AB i) {
+  float vbus = adcExtVbus();
   Setpoint sp;
   bool lag;
   uint32_t irq = spin_lock_blocking(s_lock);
@@ -76,8 +78,8 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   } else {
     float we = omegaStep(s_omega[m], theta_e, dt, 0.05f);
     DQ dq = park(i, theta_e);
-    uq = piStep(s_piq[m], sp.iq_cmd - dq.q, KP, KI, dt, VBUS_V);
-    ud = piStep(s_pid[m], 0.0f      - dq.d, KP, KI, dt, VBUS_V);
+    uq = piStep(s_piq[m], sp.iq_cmd - dq.q, KP, KI, dt, vbus);
+    ud = piStep(s_pid[m], 0.0f      - dq.d, KP, KI, dt, vbus);
     if (lag) {
       uq += we * PHASE_L * dq.d;
       ud -= we * PHASE_L * dq.q;
@@ -88,16 +90,16 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // Prioritize ud (holds id at 0) over uq: letting id drift nonzero would
     // add uncontrolled phase current beyond IMAX_A, so derate iq instead.
     float ud_mag = fabsf(ud);
-    if (ud_mag > VBUS_V) {
-      ud *= VBUS_V / ud_mag;
+    if (ud_mag > vbus) {
+      ud *= vbus / ud_mag;
       uq = 0.0f;
     } else {
-      float uq_budget = sqrtf(VBUS_V * VBUS_V - ud * ud);
+      float uq_budget = sqrtf(vbus * vbus - ud * ud);
       if (fabsf(uq) > uq_budget) uq = (uq < 0.0f ? -uq_budget : uq_budget);
     }
   }
 
-  AB v = inversePark(ud, uq, theta_e, VBUS_V);     // normalized duties [-1,1]
+  AB v = inversePark(ud, uq, theta_e, vbus);       // normalized duties [-1,1]
   s_next_a[m] = v.a;
   s_next_b[m] = v.b;
 
