@@ -105,7 +105,7 @@ cd bringup && pio run -e phase1 -t upload && pio device monitor
 Open the Arduino Serial Plotter. Five traces appear — `motorCurrentA(MOTOR_1)`,
 `motorCurrentB(MOTOR_1)`, `motorCurrentA(MOTOR_2)`, `motorCurrentB(MOTOR_2)`, and
 `busVoltage()` — printed at 50 ms intervals. Because no current command is applied, all four
-current traces should hover near 0 A, with only the small ADC offset bias visible (the INA186A3
+current traces should hover near 0 A, with only the small ADC offset bias visible (the INA181A2
 reference is 1.65 V; the ADC reads this as 0 A). With the motor unpowered the traces may wander by
 a few milliamps due to common-mode and thermal noise; this is normal. `busVoltage()` should read
 close to the actual 12 V rail (measure with a multimeter and compare).
@@ -130,7 +130,7 @@ HIGH (~3.3 V) after `motorEnable()` runs in `setup()`.
 |---------|-------------|
 | LED shows wrong color (red for GO, green for STOP) | Swap the `ledColor()` calls in `phase1_hw.h`, or check button wiring |
 | LED is always on, always off, or wrong color hue | `LED-POL` — see `ledDuty` in `src/foc_math.cpp` |
-| Current traces are offset by ±0.1 A or more | `VREF` — check `ADC_VREF` in `src/constants.h`; verify 1.65 V on the INA186A3 REF pins |
+| Current traces are offset by ±0.1 A or more | `VREF` — check `ADC_VREF` in `src/constants.h`; verify 1.65 V on the INA181A2 REF pins |
 | Current traces show wrong polarity (positive when negative expected) | `ISENSE-SIGN` — swap SOA/SOB in `src/adc.cpp` or negate the result |
 | `nSLEEP` pins remain low | Driver IC power supply missing; check 12 V rail and level-shifter |
 | No tune plays on GO, or tune is inaudible/distorted | Check `PIN_BUZZ` (GPIO4) wiring; verify buzzer frequency is within its 1-4kHz rated range |
@@ -319,7 +319,7 @@ library is structural code that should not be changed without a design review.
 
 ### Notes on the Current Sense Range
 
-The INA186A3 has a gain of 100 and the shunt is 15 mΩ, giving 1.5 V/A sensitivity. The ADC
+The INA181A2 has a gain of 50 and the shunt is 30 mΩ, giving 1.5 V/A sensitivity. The ADC
 reference is 3.3 V and the INA output is biased at 1.65 V (ISENSE_REF_V), so the usable range is
 approximately ±1.1 A. Commands above ±1.1 A are silently clamped. If you need higher current range
 you must change the shunt resistor and update `SHUNT_OHMS`, `IMAX_A`, and `ISENSE_REF_V` in

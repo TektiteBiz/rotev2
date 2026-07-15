@@ -208,9 +208,9 @@ sample lands at boot.
 
 | Parameter | Value |
 |---|---|
-| Amplifier | INA186A3 |
-| Shunt | 15 mΩ |
-| Gain | 100 V/V |
+| Amplifier | INA181A2 |
+| Shunt | 30 mΩ |
+| Gain | 50 V/V |
 | Reference | 1.65 V (mid-rail) |
 | ADC reference | 3.3 V, 12-bit (0–4095) |
 | Sensitivity | ≈ 0.54 mA/count |

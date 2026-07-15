@@ -31,7 +31,7 @@ GPIO mappings: (GPIO #: label)
 - 29: SOA_2
 
 ## Drivers
-There are two stepper motors (motor 1 and motor 2). Each motor has phases A and B. Each phase has a DRV8874 motor driver set up with PH/EN mode, and a current sensor which is a INA186A3 with a 15mohm shunt and with REF biased to 1.65V. SOB_1 is the current output of the B phase of motor 1.
+There are two stepper motors (motor 1 and motor 2). Each motor has phases A and B. Each phase has a DRV8874 motor driver set up with PH/EN mode, and a current sensor which is a INA181A2 with a 30mohm shunt and with REF biased to 1.65V. SOB_1 is the current output of the B phase of motor 1.
 
 Each driver's EN pin is hardwired HIGH (pull-up on the PCB, no MCU connection) rather than GPIO-controlled. PH is driven by PWM (locked-antiphase: duty=(1+d)/2, d in [-1,1]), so current is always actively driven through the H-bridge rather than coasting -- this is the decay behavior FOC needs. For example, PHB_2 is the PWM pin on the B phase driver for motor 2. This replaced an earlier sign-magnitude scheme (EN-PWM, PH as static direction) that coasted instead of actively decaying; see Known Pitfalls.
 

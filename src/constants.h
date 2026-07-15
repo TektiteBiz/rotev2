@@ -16,9 +16,9 @@ constexpr float BANDWIDTH = 1000.0f;       // rad/s
 constexpr float KP = BANDWIDTH * PHASE_L;  // 3.5
 constexpr float KI = BANDWIDTH * PHASE_R;  // 3500
 
-// --- Current sense (INA186A3, 15 mohm, REF 1.65V, 3.3V ADC) ---
-constexpr float SHUNT_OHMS = 0.015f;
-constexpr float INA_GAIN = 100.0f;
+// --- Current sense (INA181A2, 30 mohm, REF 1.65V, 3.3V ADC) ---
+constexpr float SHUNT_OHMS = 0.03f;
+constexpr float INA_GAIN = 50.0f;
 constexpr float ISENSE_REF_V = 1.65f;
 constexpr float ADC_VREF = 3.3f;
 constexpr float ADC_MAX = 4095.0f;
