@@ -25,7 +25,9 @@ void motorEnable(Motor m, bool enable) {
     hwSetNsleep(m, true);
     focEnable(m, true);
   } else {
-    focEnable(m, false);  // zeroes the duty before the driver sleeps
+    // nSLEEP tri-states the bridge immediately; the ISR clears the duty on
+    // its next pass for this motor, which is up to 167 us later.
+    focEnable(m, false);
     hwSetNsleep(m, false);
   }
 }

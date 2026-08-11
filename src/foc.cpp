@@ -50,6 +50,8 @@ static float s_next_b[2] = {0, 0};
 // motors, so each motor is serviced at PWM_HZ/2.
 static constexpr float CTRL_DT = 1.0f / (PWM_HZ / 2.0f);
 static constexpr float TWO_PI_F = 6.28318530717958647692f;
+// Largest tick count that (float)ticks still represents exactly.
+static constexpr uint32_t TICKS_MAX = 1u << 24;
 
 // per-motor pin sets
 static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
@@ -84,7 +86,11 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     float t = (float)s_sp[m].ticks * CTRL_DT;
     ProfileState st;
     if (s_sp[m].cruise) {
-      st.t = t; st.pos = s_sp[m].prog.pos + s_sp[m].cruise_vel * CTRL_DT;
+      // pos from t, not a running sum: adding a fixed increment to a growing
+      // float stalls outright once the increment falls below half an ulp
+      // (at 200 rpm that is ~26 minutes, after which pos would freeze while
+      // the shaft kept turning).
+      st.t = t; st.pos = s_sp[m].cruise_vel * t;
       st.vel = s_sp[m].cruise_vel; st.acc = 0.0f; st.done = false;
     } else {
       st = s_sp[m].prof.at(t);
@@ -93,7 +99,10 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     vel = st.vel;
     // Once the move is over the axis holds: velocity 0, angle frozen, still
     // energised. Freezing the counter also keeps t from running away.
-    if (!st.done) ++s_sp[m].ticks;
+    // Cruise has no end, so cap its counter rather than let it wrap uint32
+    // (4.1 days) or lose integer exactness in the float conversion (23 min).
+    // Capping only freezes reported time; the angle integral is unaffected.
+    if (!st.done && s_sp[m].ticks < TICKS_MAX) ++s_sp[m].ticks;
     s_sp[m].prog = st;
     // Integrate the COMMANDED angle instead of driving it from st.pos: at
     // 25000 rad a float resolves only ~2 mrad, which is 6 electrical degrees
@@ -101,8 +110,8 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // revolution keeps the integral small and is exact, because POLE_PAIRS is
     // an integer and so the electrical angle is untouched by the wrap.
     float th = theta + vel * CTRL_DT;
-    if (th >= TWO_PI_F) th -= TWO_PI_F;
-    else if (th < 0.0f) th += TWO_PI_F;
+    while (th >= TWO_PI_F) th -= TWO_PI_F;
+    while (th < 0.0f) th += TWO_PI_F;
     s_sp[m].theta_mech = th;  // for the NEXT tick
   }
   spin_unlock(s_lock, irq);
@@ -133,6 +142,7 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   float we = (mode == MODE_PROFILE) ? vel * (float)POLE_PAIRS : 0.0f;
 
   float ud, uq;
+  DQ i_dq = {0.0f, 0.0f};
 
   if (mode == MODE_VOLTAGE) {
     // Open-loop: uq is commanded directly in volts, ud=0, PI not touched.
@@ -140,7 +150,7 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     uq = uq_cmd;
   } else {
     DQ dq = park(i, theta_e);
-    s_teli[m].d = dq.d; s_teli[m].q = dq.q;
+    i_dq = dq;
     // Voltage-limited current derate, FEEDFORWARD from speed.
     // A feedback version that measures |ud| and scales by (ud_lim/|ud|)
     // cannot work, because piStep already clamps its output to +-vbus: |ud|
@@ -214,9 +224,15 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   // not the angle the current was sampled at -- see COMP_TICKS.
   float theta_out = theta_e + we * (COMP_TICKS * CTRL_DT);
   AB v = inversePark(ud, uq, theta_out, vbus);     // normalized duties [-1,1]
-  s_telu[m].d = ud; s_telu[m].q = uq;
   s_next_a[m] = v.a;
   s_next_b[m] = v.b;
+
+  // Publish the whole dq snapshot in one locked write, so a caller polling
+  // the four getters cannot pair ud from one tick with iq from the next.
+  uint32_t irq2 = spin_lock_blocking(s_lock);
+  s_telu[m].d = ud;      s_telu[m].q = uq;
+  s_teli[m].d = i_dq.d;  s_teli[m].q = i_dq.q;
+  spin_unlock(s_lock, irq2);
 }
 
 static void __not_in_flash_func(pwmWrapISR)() {
@@ -258,6 +274,17 @@ void focStart() {
 void focEnable(Motor m, bool enable) {
   uint32_t irq = spin_lock_blocking(s_lock);
   s_sp[m].enabled = enable;
+  // Disabling rewinds the profile clock instead of freezing it. There is no
+  // position sensor, so the commanded angle IS the assumed rotor angle: the
+  // bridge is about to be de-energised and the rotor will coast to rest, and
+  // resuming mid-cruise would then command 1400 Hz electrical at a stationary
+  // rotor, which cannot pull in. It would buzz while motorProgress() reported
+  // the move completing normally. Re-enabling replays the move from rest.
+  if (!enable) {
+    s_sp[m].ticks = 0;
+    s_sp[m].prog = s_sp[m].cruise ? ProfileState{0.0f, 0.0f, s_sp[m].cruise_vel, 0.0f, false}
+                                  : s_sp[m].prof.at(0.0f);
+  }
   spin_unlock(s_lock, irq);
 }
 

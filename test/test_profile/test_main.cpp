@@ -64,6 +64,32 @@ void test_from_time_accel_falls_back_when_time_unreachable() {
   TEST_ASSERT_FLOAT_WITHIN(1e-2, 10.0f, p.maxAccel());
 }
 
+void test_from_time_accel_survives_time_far_above_minimum() {
+  // Regression: v = A*(T-sqrt(T*T-4D/A))/2 cancels catastrophically once T*T
+  // swamps 4D/A. Here Tmin = 2*sqrt(D/A) = 0.063 s, so T=300 s is 4700x above
+  // it -- deeply reachable -- yet the old form returned an EMPTY profile.
+  Profile p = Profile::fromTimeAccel(0.1f, 300.0f, 100.0f);
+  TEST_ASSERT_TRUE(p.valid());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 300.0f, p.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.1f, p.distance());
+  TEST_ASSERT_TRUE(p.cruiseTime() > 0.0f);
+}
+
+void test_from_time_accel_holds_requested_time_across_a_wide_sweep() {
+  // One revolution slow-indexed at phase3's accel limit, and friends: every
+  // one of these is far above Tmin, so "exactly `time` seconds" must hold.
+  const float D[] = {0.01f, 0.5f, 6.2832f, 6.2832f};
+  const float T[] = {60.0f, 200.0f, 600.0f, 300.0f};
+  const float A[] = {100.0f, 100.0f, 89.0f, 50.0f};
+  for (int k = 0; k < 4; ++k) {
+    Profile p = Profile::fromTimeAccel(D[k], T[k], A[k]);
+    TEST_ASSERT_TRUE(p.valid());
+    TEST_ASSERT_FLOAT_WITHIN(T[k] * 1e-3f, T[k], p.duration());
+    TEST_ASSERT_FLOAT_WITHIN(D[k] * 1e-3f, D[k], p.distance());
+    TEST_ASSERT_TRUE(std::fabs(p.maxAccel()) <= A[k] + 1e-3f);
+  }
+}
+
 void test_from_time_accel_at_exactly_minimum_time() {
   float tmin = 2.0f * std::sqrt(100.0f / 10.0f);  // triangular, disc == 0
   Profile p = Profile::fromTimeAccel(100.0f, tmin, 10.0f);
@@ -257,6 +283,8 @@ int main() {
   RUN_TEST(test_accessors_are_self_consistent);
   RUN_TEST(test_from_time_accel_reproduces_requested_duration);
   RUN_TEST(test_from_time_accel_falls_back_when_time_unreachable);
+  RUN_TEST(test_from_time_accel_survives_time_far_above_minimum);
+  RUN_TEST(test_from_time_accel_holds_requested_time_across_a_wide_sweep);
   RUN_TEST(test_from_time_accel_at_exactly_minimum_time);
   RUN_TEST(test_scale_distance_keeps_durations_and_scales_the_rest);
   RUN_TEST(test_scale_distance_negative_reverses_the_move);

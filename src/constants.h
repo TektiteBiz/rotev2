@@ -91,7 +91,7 @@ constexpr float ISENSE_REF_V = 1.65f;
 constexpr float ADC_VREF = 3.3f;
 constexpr float ADC_MAX = 4095.0f;
 constexpr float VOLTS_PER_AMP = SHUNT_OHMS * INA_GAIN;  // 1.5
-constexpr float IMAX_A = 1.1f;  // command clamp / sensor range
+constexpr float IMAX_A = 1.1f;  // current-sense full-scale range
 
 // --- Per-channel calibration (ISENSE-CAL / ISENSE-SIGN knob) ---
 // Measure at motor idle (no current): ISENSE_OFFSET_x = -(ADC reading at 0 A).

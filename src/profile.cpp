@@ -50,7 +50,13 @@ Profile Profile::fromTimeAccel(float distance, float time, float max_accel) {
     // T is below the time-optimal move at this accel: give the fastest one.
     return fromVelAccel(distance, std::sqrt(A * D), A);
   }
-  const float v = A * (T - std::sqrt(disc)) * 0.5f;
+  // 2D/(T+sqrt(disc)), not A*(T-sqrt(disc))/2. The roots multiply to A*D, so
+  // the two forms are algebraically identical -- but the subtraction cancels
+  // catastrophically once T*T swamps 4D/A. fromTimeAccel(0.1, 300, 100) has
+  // ulp(T*T) = 0.0078 against a 4D/A of 0.004, so disc rounds back to T*T,
+  // sqrt returns exactly T, and v came out 0: a silently empty profile for a
+  // request sitting 4700x above the minimum time. This form has no subtraction.
+  const float v = 2.0f * D / (T + std::sqrt(disc));
   if (!finitePos(v)) return Profile();
   return fromVelAccel(distance, v, A);
 }
@@ -71,51 +77,6 @@ Profile Profile::scaleTime(float k) const {
   p.ta_  = ta_ * k;
   p.tc_  = tc_ * k;
   return p;
-}
-
-float Profile::distance()    const { return vpk_ * (ta_ + tc_); }
-float Profile::duration()    const { return 2.0f * ta_ + tc_; }
-float Profile::maxVelocity() const { return vpk_; }
-float Profile::maxAccel()    const { return (ta_ > 0.0f) ? vpk_ / ta_ : 0.0f; }
-float Profile::accelTime()   const { return ta_; }
-float Profile::cruiseTime()  const { return tc_; }
-float Profile::decelTime()   const { return ta_; }
-bool  Profile::valid()       const { return ta_ > 0.0f && vpk_ != 0.0f; }
-
-ProfileState Profile::at(float t) const {
-  ProfileState st{0.0f, 0.0f, 0.0f, 0.0f, true};
-  if (!valid()) return st;
-
-  const float T = duration();
-  if (!(t > 0.0f)) t = 0.0f;  // also catches NaN
-  if (t > T) t = T;
-  st.t = t;
-
-  const float a = vpk_ / ta_;          // signed ramp acceleration
-  const float x_ramp = 0.5f * vpk_ * ta_;  // distance covered by one ramp
-  if (t >= T) {
-    st.pos  = distance();
-    st.vel  = 0.0f;
-    st.acc  = 0.0f;
-    st.done = true;
-  } else if (t < ta_) {
-    st.vel  = a * t;
-    st.pos  = 0.5f * a * t * t;
-    st.acc  = a;
-    st.done = false;
-  } else if (t < ta_ + tc_) {
-    st.pos  = x_ramp + vpk_ * (t - ta_);
-    st.vel  = vpk_;
-    st.acc  = 0.0f;
-    st.done = false;
-  } else {
-    float u = t - ta_ - tc_;
-    st.vel  = vpk_ - a * u;
-    st.pos  = x_ramp + vpk_ * tc_ + vpk_ * u - 0.5f * a * u * u;
-    st.acc  = -a;
-    st.done = false;
-  }
-  return st;
 }
 
 void Profile::print() const {

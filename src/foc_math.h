@@ -19,9 +19,8 @@ float piStep(PIState& s, float error, float kp, float ki, float dt, float out_li
 // Electrical angle from mechanical angle (scaled by POLE_PAIRS).
 float electricalAngle(float theta_mech);
 
-// ADC current sense conversion and clamping.
+// ADC current sense conversion.
 float    countsToAmps(uint16_t counts);
-float    clampCurrent(float amps);
 
 // Active-low LED duty cycle: returns top - (value*top)/255.
 uint16_t ledDuty(uint8_t value, uint16_t top);
@@ -37,7 +36,7 @@ float adsRawToVolts(int16_t raw16);
 float dividerToVbus(float v_div);
 
 // Weighted round-robin channel sequence for the ADS1015 background sampler:
-// AIN0 gets 2 of every 3 slots (bus voltage needs ~1kHz; user channels don't).
+// AIN0 gets 3 of every 6 slots (bus voltage needs ~1kHz; user channels don't).
 // Returns 0=AIN0, 1=AIN1, 2=AIN2, 3=AIN3 for sequence index seq_idx (wraps mod 6).
 uint8_t adcSeqChannel(uint8_t seq_idx);
 

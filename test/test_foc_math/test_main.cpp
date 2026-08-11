@@ -71,10 +71,6 @@ void test_counts_to_amps_one_amp() {
   // V = 1.65 + 1.5 = 3.15 -> counts = 3.15/3.3*4095 = 3908.8
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, countsToAmps(3909));
 }
-void test_clamp_current_limits() {
-  TEST_ASSERT_FLOAT_WITHIN(1e-5, 1.1f, clampCurrent(5.0f));
-  TEST_ASSERT_FLOAT_WITHIN(1e-5, -1.1f, clampCurrent(-5.0f));
-}
 void test_led_duty_active_low() {
   TEST_ASSERT_EQUAL_UINT16(0, ledDuty(255, 3124));     // full on -> pin low
   TEST_ASSERT_EQUAL_UINT16(3124, ledDuty(0, 3124));    // off -> pin high
@@ -144,7 +140,6 @@ int main() {
   RUN_TEST(test_electrical_angle_stays_bounded_for_large_input);
   RUN_TEST(test_counts_to_amps_midscale_is_zero);
   RUN_TEST(test_counts_to_amps_one_amp);
-  RUN_TEST(test_clamp_current_limits);
   RUN_TEST(test_led_duty_active_low);
   RUN_TEST(test_led_duty_midpoint);
   RUN_TEST(test_buzz_clamp_within_range);

@@ -57,8 +57,6 @@ float countsToAmps(uint16_t counts) {
   return (v - ISENSE_REF_V) / VOLTS_PER_AMP;
 }
 
-float clampCurrent(float amps) { return clampf(amps, -IMAX_A, IMAX_A); }
-
 uint16_t ledDuty(uint8_t value, uint16_t top) {
   uint32_t on = ((uint32_t)value * top) / 255u;   // desired brightness level
   return (uint16_t)(top - on);                      // active-low invert

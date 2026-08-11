@@ -37,17 +37,62 @@ class Profile {
   // velocity scales by 1/k and acceleration by 1/k^2.
   Profile scaleTime(float k) const;
 
-  float distance()   const;  // signed, radians
-  float duration()   const;  // seconds, accel + cruise + decel
-  float maxVelocity()const;  // signed peak (cruise) velocity, rad/s
-  float maxAccel()   const;  // signed peak acceleration, rad/s^2
-  float accelTime()  const;  // seconds
-  float cruiseTime() const;  // seconds (0 for a triangular profile)
-  float decelTime()  const;  // seconds, == accelTime()
-  bool  valid()      const;  // false for an empty/degenerate profile
+  // These are defined inline, not in profile.cpp, on purpose: at() is called
+  // from the control ISR, which is __not_in_flash_func precisely so no XIP
+  // cache miss can stretch a control tick. An out-of-line at() living in flash
+  // would reintroduce exactly that stall, and inside the setpoint spinlock at
+  // that. Inlining puts the arithmetic in the caller's RAM-resident code, and
+  // trapezoidal segments need no transcendentals to get there.
+  float distance()   const { return vpk_ * (ta_ + tc_); }        // signed, rad
+  float duration()   const { return 2.0f * ta_ + tc_; }          // seconds
+  float maxVelocity()const { return vpk_; }                      // signed, rad/s
+  float maxAccel()   const { return ta_ > 0.0f ? vpk_ / ta_ : 0.0f; }
+  float accelTime()  const { return ta_; }                       // seconds
+  float cruiseTime() const { return tc_; }  // 0 for a triangular profile
+  float decelTime()  const { return ta_; }  // == accelTime()
+  bool  valid()      const { return ta_ > 0.0f && vpk_ != 0.0f; }
 
-  ProfileState at(float t) const;  // clamped to [0, duration()]
-  void print() const;              // human-readable dump to Serial
+  // State at time t, clamped to [0, duration()].
+  //
+  // always_inline, not merely defined in-class: "inline" is a hint GCC
+  // declined to take here, leaving an out-of-line copy in XIP flash that the
+  // RAM-resident control ISR reached through a veneer -- a cache miss on that
+  // path stretches a 24 kHz control tick by an unbounded amount. Forcing the
+  // inline puts the arithmetic in the caller's own section instead. Verify
+  // with: arm-none-eabi-objdump -d firmware.elf | grep Profile2at
+  __attribute__((always_inline)) inline ProfileState at(float t) const {
+    ProfileState st{0.0f, 0.0f, 0.0f, 0.0f, true};
+    if (!valid()) return st;
+
+    const float T = duration();
+    if (!(t > 0.0f)) t = 0.0f;  // also catches NaN
+    if (t > T) t = T;
+    st.t = t;
+
+    const float a = vpk_ / ta_;              // signed ramp acceleration
+    const float x_ramp = 0.5f * vpk_ * ta_;  // distance covered by one ramp
+    if (t >= T) {
+      st.pos = distance();
+    } else if (t < ta_) {
+      st.vel  = a * t;
+      st.pos  = 0.5f * a * t * t;
+      st.acc  = a;
+      st.done = false;
+    } else if (t < ta_ + tc_) {
+      st.pos  = x_ramp + vpk_ * (t - ta_);
+      st.vel  = vpk_;
+      st.done = false;
+    } else {
+      const float u = t - ta_ - tc_;
+      st.vel  = vpk_ - a * u;
+      st.pos  = x_ramp + vpk_ * tc_ + vpk_ * u - 0.5f * a * u * u;
+      st.acc  = -a;
+      st.done = false;
+    }
+    return st;
+  }
+
+  void print() const;  // human-readable dump to Serial
 
  private:
   float vpk_, ta_, tc_;  // signed peak velocity, ramp time, cruise time

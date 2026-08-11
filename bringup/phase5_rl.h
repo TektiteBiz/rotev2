@@ -103,7 +103,7 @@ static constexpr int N_SWEEP = sizeof(R_SWEEP_V) / sizeof(R_SWEEP_V[0]);
 static float buf[N_TOT];
 
 struct Fit {
-  float R, L, tau, r2, i0, iinf;
+  float R, L, tau, r2;
   int n;
 };
 
@@ -140,7 +140,7 @@ static void captureStep(bool axis_a, float v_other, float v_from, float v_to) {
 }
 
 static Fit fitStep(float v_from, float v_to) {
-  Fit f = {0, 0, 0, 0, 0, 0, 0};
+  Fit f = {0, 0, 0, 0, 0};
 
   double i0 = 0;
   for (int k = 0; k < N_PRE; ++k) i0 += buf[k];
@@ -153,8 +153,6 @@ static Fit fitStep(float v_from, float v_to) {
   iinf /= nt;
 
   double A = iinf - i0;
-  f.i0 = (float)i0;
-  f.iinf = (float)iinf;
   if (fabs(A) < 1e-4) return f;  // no step -> nothing to fit
 
   double sw = 0, swx = 0, swy = 0, swxx = 0, swxy = 0, swyy = 0;
@@ -291,7 +289,11 @@ void setup() {
   // ---- Lq + magnet flux: closed loop, spinning, id held at 0 ----
   Serial.println("# Lq sweep (closed loop, spinning -- keep the shaft free)");
   applyV(0.0f, 0.0f);
-  motorSetVelocity(MOTOR_1, 0.0f);  // leaves AB mode, re-aligns at theta=0
+  // Park at a known angle first: motorSetVelocity leaves theta_mech alone,
+  // unlike the motorWrite(0, ...) this replaced. Without it the sweep would
+  // silently start from whatever angle an earlier command left behind.
+  motorSetVoltage(MOTOR_1, 0.0f, 0.0f);
+  motorSetVelocity(MOTOR_1, 0.0f);  // leaves AB mode, holds at theta=0
   delay(800);
   rampTo(0.0f, LQ_RPM[0], 1500);
 
