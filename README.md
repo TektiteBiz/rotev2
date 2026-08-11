@@ -1,14 +1,5 @@
 # RotEv2 FOC Library
 
-PlatformIO/Arduino library for the **Tektite RotEv2** board (RP2354). It runs field-oriented
-control for the two on-board 2-phase stepper motors on core1, and exposes a small motion API on
-core0: you build a motion **profile**, hand it to a motor, and poll its progress.
-
-Everything the API takes or returns is in **radians and seconds** (angles, velocities,
-accelerations). Motor current is fixed internally at 0.8 A and is not exposed.
-
----
-
 ## Install (PlatformIO)
 
 Add to `platformio.ini`:
@@ -32,11 +23,6 @@ sketch runs on core0 (`setup()` / `loop()`).
 
 **Do NOT define `setup1()` or `loop1()` in your sketch** — that conflicts with the library's core1
 entry point.
-
-The profile itself is executed by the control ISR, not by your `loop()`. That is deliberate: a
-core0 stall (a USB serial write, a blocking I2C transaction) would otherwise land as a step in the
-commanded field, i.e. as torque ripple. Your loop only decides *which* profile runs; it never has
-to keep time.
 
 ---
 
@@ -74,8 +60,7 @@ See `examples/Basic/Basic.ino`.
 ## Profile
 
 A `Profile` is a complete motion plan: a distance, and the velocity/acceleration envelope used to
-cover it. It is pure math with no hardware attached, so you can build, inspect, print, copy and
-store profiles freely and only later hand one to a motor.
+cover it.
 
 The shape is trapezoidal in velocity — constant acceleration up to the cruise speed, constant
 speed, then constant deceleration back to rest — so position traces the familiar S. A move too
@@ -266,10 +251,3 @@ enum Motor      : uint8_t { MOTOR_1 = 0, MOTOR_2 = 1 };
 enum Button     : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 enum AdcChannel : uint8_t { ADC_AIN1 = 0, ADC_AIN2 = 1, ADC_AIN3 = 2 };
 ```
-
----
-
-## Hardware Bring-Up
-
-See [`docs/BRINGUP.md`](docs/BRINGUP.md) for board validation — it is for bringing up a new board,
-not for using the library.
