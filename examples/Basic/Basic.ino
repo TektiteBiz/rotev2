@@ -1,10 +1,13 @@
 // Basic.ino - minimal RotEv2 usage example
-// Runs MOTOR_1 back and forth: 100 rad out, 100 rad back, forever,
-// chirping on the buzzer each time a leg lands.
+// Runs both motors back and forth: 100 rad out, 100 rad back, with MOTOR_2
+// always travelling opposite to MOTOR_1, chirping on the buzzer each time a
+// leg lands. The GO button starts it, the STOP button stops it; the LED is
+// blue while running and red while stopped.
 //
 // NOTE: The rotev library owns core1 for its control loop.
 // Do NOT define setup1() or loop1() in your sketch.
 
+#include <Arduino.h>
 #include <rotev.h>
 using namespace rotev;
 
@@ -12,6 +15,7 @@ using namespace rotev;
 static Profile fwd;
 static Profile back;
 static bool going_out = true;
+static bool running = false;
 
 // Rising three-note chirp. buzzerOn() retunes while already sounding, so
 // there is no need to switch it off between notes. Frequencies are clamped
@@ -25,6 +29,14 @@ static void playDone() {
   buzzerOff();
 }
 
+// Hand the current leg to both motors. The two profiles are mirror images of
+// each other, so the motors turn in opposite directions over the same
+// envelope and land at the same moment.
+static void startLeg() {
+  motorSetProfile(MOTOR_1, going_out ? fwd : back);
+  motorSetProfile(MOTOR_2, going_out ? back : fwd);
+}
+
 void setup() {
   Serial.begin(115200);
   begin();
@@ -33,21 +45,53 @@ void setup() {
   back = fwd.scaleDistance(-1.0f);  // same envelope, opposite direction
   fwd.print();
 
-  motorEnable(MOTOR_1);
-  motorSetProfile(MOTOR_1, fwd);
-  ledColor(0, 0, 255);  // blue = running
+  ledColor(255, 0, 0);  // red = stopped
 }
 
 void loop() {
-  ProfileState st = motorProgress(MOTOR_1);
-  Serial.printf("t %.2f s  pos %.1f rad  vel %.1f rad/s\n", st.t, st.pos, st.vel);
+  // The buttons are active-high; act on the press edge so that holding one
+  // down does not keep restarting the current leg.
+  static bool go_prev = false, stop_prev = false;
+  bool go_now = buttonPressed(BTN_GO);
+  bool stop_now = buttonPressed(BTN_STOP);
+  bool go_edge = go_now && !go_prev;
+  bool stop_edge = stop_now && !stop_prev;
+  go_prev = go_now;
+  stop_prev = stop_now;
 
-  // The profile is executed by the control loop on core1, so all this loop
-  // has to do is hand over the next leg once the current one lands.
-  if (st.done) {
+  // STOP wins if both are pressed in the same pass.
+  if (stop_edge && running) {
+    running = false;
+    motorEnable(MOTOR_1, false);
+    motorEnable(MOTOR_2, false);
+    ledColor(255, 0, 0);  // red = stopped
+  } else if (go_edge && !running) {
+    running = true;
+    motorEnable(MOTOR_1);
+    motorEnable(MOTOR_2);
+    // motorSetProfile() starts from the current position, so this restarts
+    // the leg that was interrupted rather than resuming partway through it.
+    startLeg();
+    ledColor(0, 0, 255);  // blue = running
+  }
+
+  if (!running) {
+    delay(10);
+    return;
+  }
+
+  ProfileState s1 = motorProgress(MOTOR_1);
+  ProfileState s2 = motorProgress(MOTOR_2);
+  Serial.printf("vbus %.2f V  t %.2f s  m1 %.1f rad %.1f rad/s  m2 %.1f rad %.1f rad/s\n",
+                busVoltage(), s1.t, s1.pos, s1.vel, s2.pos, s2.vel);
+
+  // The profiles are executed by the control loop on core1, so all this loop
+  // has to do is hand over the next leg once the current one lands. Both
+  // motors run the same envelope, so MOTOR_1 landing means both have landed.
+  if (s1.done) {
     playDone();
     going_out = !going_out;
-    motorSetProfile(MOTOR_1, going_out ? fwd : back);
+    startLeg();
   }
 
   delay(100);

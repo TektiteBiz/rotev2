@@ -37,6 +37,13 @@ void buzzOn(uint16_t freq_hz) {
 void buzzOff() {
   unsigned slice = pwm_gpio_to_slice_num(PIN_BUZZ);
   pwm_hw->en &= ~(1u << slice);
+  // Disabling the slice freezes the output at whatever level it held, which
+  // at 50% duty is high about half the time. That leaves the piezo DC-biased
+  // (harmless -- it is a capacitor, so only leakage flows -- but untidy), so
+  // park the pin low: with level 0 the counter never compares true, and
+  // zeroing the stopped counter forces the output to re-evaluate to low.
+  pwm_set_gpio_level(PIN_BUZZ, 0);
+  pwm_set_counter(slice, 0);
 }
 
 } // namespace rotev
