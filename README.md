@@ -10,7 +10,7 @@ platform     = https://github.com/maxgerhardt/platform-raspberrypi.git
 board        = generic_rp2350
 board_build.core = earlephilhower
 framework    = arduino
-lib_deps     = https://github.com/Nv7-Github/rotev2.git
+lib_deps     = https://github.com/TekiteBiz/rotev2.git
 build_flags  = -std=gnu++17
 ```
 
