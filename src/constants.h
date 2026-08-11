@@ -80,6 +80,7 @@ constexpr float DECOUPLE_FRAC = 1.0f;
 constexpr float WE_ALPHA = 0.02f;   // speed-estimator LPF, position mode only
 constexpr float LQ_ALPHA = 0.001f;  // online Lq estimator LPF (~80 ms)
 constexpr float WE_TIMEOUT_S = 0.05f;  // no angle change for this long -> stopped
+constexpr uint32_t PROF_AGE_MAX = 600; // cap velocity extrapolation (~50 ms)
 
 // --- Current sense (INA181A2, 30 mohm, REF 1.65V, 3.3V ADC) ---
 constexpr float SHUNT_OHMS = 0.03f;

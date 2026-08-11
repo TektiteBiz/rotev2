@@ -12,9 +12,9 @@
 
 namespace rotev {
 
-struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; float vel; bool enabled; bool openloop; bool ab_mode; bool velmode; };
+struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; float vel; uint32_t seq; bool enabled; bool openloop; bool ab_mode; bool velmode; bool profmode; };
 
-static volatile Setpoint s_sp[2]   = {{0,0,0,0,false,false,false,false},{0,0,0,0,false,false,false,false}};
+static volatile Setpoint s_sp[2]   = {{0,0,0,0,0,false,false,false,false,false},{0,0,0,0,0,false,false,false,false,false}};
 static volatile AB       s_tel[2]  = {{0,0},{0,0}};
 // Applied dq voltage and measured dq current, for bringup telemetry. Written
 // post-clamp so it reflects what actually reached inversePark().
@@ -27,6 +27,8 @@ static float    s_prev_te[2] = {0.0f, 0.0f};
 static bool     s_we_primed[2] = {false, false};
 static float    s_lq[2] = {PHASE_LQ, PHASE_LQ};  // online Lq, tracks saturation
 static uint32_t s_hold[2] = {0, 0};              // ticks since theta_e moved
+static uint32_t s_seq[2] = {0, 0};               // last profile seq seen
+static uint32_t s_age[2] = {0, 0};               // ticks since that seq arrived
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
 // Pre-computed duties applied at the very start of the next ISR invocation,
@@ -67,6 +69,19 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     s_sp[m].theta_mech = th;
   }
   sp.theta_mech = s_sp[m].theta_mech;
+
+  // Profile mode: position is authoritative, velocity only fills the gap
+  // since it arrived. Integrating velocity alone (velmode) is fine for "spin
+  // at N RPM", but for a position profile the caller's integral and the
+  // ISR's would be two independent sums of the same velocity and would drift
+  // apart with nothing to correct them. Here every new setpoint resets the
+  // angle outright, so error cannot accumulate; the feedforward only smooths
+  // over core0 being late, and is capped so a wedged core0 cannot run away.
+  if (s_sp[m].profmode && s_sp[m].enabled) {
+    if (s_sp[m].seq != s_seq[m]) { s_seq[m] = s_sp[m].seq; s_age[m] = 0; }
+    else if (s_age[m] < PROF_AGE_MAX) ++s_age[m];
+    sp.theta_mech += s_sp[m].vel * ((float)s_age[m] * CTRL_DT);
+  }
   sp.iq_cmd     = s_sp[m].iq_cmd;
   sp.enabled    = s_sp[m].enabled;
   sp.openloop   = s_sp[m].openloop;
@@ -78,12 +93,14 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   sp.ab_mode    = s_sp[m].ab_mode;
   sp.vb_duty    = s_sp[m].vb_duty;
   sp.velmode    = s_sp[m].velmode;
+  sp.profmode   = s_sp[m].profmode;
   sp.vel        = s_sp[m].vel;
   spin_unlock(s_lock, irq);
 
   if (!sp.enabled) {
     piReset(s_pid[m]); piReset(s_piq[m]); s_derate[m] = 1.0f;
     s_we[m] = 0.0f; s_we_primed[m] = false; s_lq[m] = PHASE_LQ; s_hold[m] = 0;
+    s_age[m] = 0;
     s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
     return;
   }
@@ -96,7 +113,7 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   // noise-free; otherwise fall back to differencing theta_e, wrapping the
   // delta so the +-PI boundary does not read as a huge jump.
   float we;
-  if (sp.velmode) {
+  if (sp.velmode || sp.profmode) {
     we = sp.vel * (float)POLE_PAIRS;
     s_we[m] = we;
   } else if (!s_we_primed[m]) {
@@ -273,6 +290,7 @@ void focSetpoint(Motor m, float theta_mech, float iq_cmd, bool enabled) {
   s_sp[m].openloop = false;
   s_sp[m].ab_mode = false;
   s_sp[m].velmode = false;
+  s_sp[m].profmode = false;
   spin_unlock(s_lock, irq);
 }
 
@@ -288,6 +306,25 @@ void focSetVelocity(Motor m, float vel_rad_s, float iq_cmd, bool enabled) {
   s_sp[m].openloop = false;
   s_sp[m].ab_mode = false;
   s_sp[m].velmode = true;
+  s_sp[m].profmode = false;
+  spin_unlock(s_lock, irq);
+}
+
+// Profile mode: absolute position plus a velocity feedforward. theta_mech is
+// applied exactly as given on every update, so the caller's profile -- not an
+// ISR-side integral -- decides where the axis ends up.
+void focSetProfile(Motor m, float theta_mech, float vel_rad_s, float iq_cmd,
+                   bool enabled) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].theta_mech = theta_mech;
+  s_sp[m].vel = vel_rad_s;
+  s_sp[m].iq_cmd = clampCurrent(iq_cmd);
+  s_sp[m].enabled = enabled;
+  s_sp[m].openloop = false;
+  s_sp[m].ab_mode = false;
+  s_sp[m].velmode = false;
+  s_sp[m].profmode = true;
+  ++s_sp[m].seq;
   spin_unlock(s_lock, irq);
 }
 
@@ -299,6 +336,7 @@ void focSetVoltage(Motor m, float theta_mech, float uq_volts, bool enabled) {
   s_sp[m].openloop = true;
   s_sp[m].ab_mode = false;
   s_sp[m].velmode = false;
+  s_sp[m].profmode = false;
   spin_unlock(s_lock, irq);
 }
 
@@ -337,6 +375,7 @@ void focSetVoltageAB(Motor m, float va_duty, float vb_duty, bool enabled) {
   s_sp[m].enabled = enabled;
   s_sp[m].ab_mode = true;
   s_sp[m].velmode = false;
+  s_sp[m].profmode = false;
   spin_unlock(s_lock, irq);
 }
 

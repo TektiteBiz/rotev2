@@ -7,6 +7,7 @@ void  motorEnable(Motor m);
 void  motorDisable(Motor m);
 void  motorWrite(float theta_rad, float amps, Motor m);
 void  motorWriteVelocity(float vel_rad_s, float amps, Motor m);  // ISR integrates the angle
+void  motorWriteProfile(float theta_rad, float vel_rad_s, float amps, Motor m);  // position + vel feedforward
 void  motorWriteVoltage(float theta_rad, float uq_volts, Motor m);
 void  motorWriteVoltageAB(float va_volts, float vb_volts, Motor m);
 void  buzzerOn(uint16_t freq_hz);  // clamped to [1000,4000] Hz, 50% duty
