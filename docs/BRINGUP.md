@@ -276,12 +276,15 @@ cd bringup && pio run -e phase3 -t upload && pio device monitor
 
 **What to watch.**
 
-A small periodic print: phase currents, d/q currents and voltages, bus voltage, and the loop rate.
-Watch for:
+A small periodic print: profile time, each axis's commanded RPM, electrical degrees per control
+step, bus voltage, and per-axis d/q currents and voltages. Watch for:
 
-- Currents that stay smooth sinusoids all the way through the ramp, with no growing envelope.
-- `id` regulated near zero; `iq` at the derated command; `|ud|` riding just under its share of the
-  bus once the axis is at speed.
+- `id` regulated near zero; `iq` near the 0.8 A command and falling once the `UD_FRAC` derate
+  engages; `|ud|` riding just under its share of the bus once the axis is at speed.
+- `degEStep` staying well under 90 (a quarter electrical cycle) — above roughly 20 degrees per
+  step the current cannot look like a sine no matter how much voltage headroom there is.
+- Phase currents are not in this print; scope them, or read `motorCurrentA/B` from
+  `rotev_internal.h`, to confirm they stay smooth sinusoids through the ramp.
 - Bus voltage sag under load — the derate sizes its limit against this number, so a dip costs real
   headroom.
 - `motorProgress(m).done` staying false for the whole run, then the axes holding position.
@@ -304,7 +307,7 @@ On GPIO10, confirm the timing budget is still met at 1417 Hz electrical.
 | Motor pulls out (loses sync) partway up the ramp | Lengthen the profile's accel time — `Profile::scaleTime()` on the phase's profile, or a lower `max_accel`; check bus sag |
 | Noisy current signals causing instability | `OVERSAMPLE` — raise (watch timing budget); also check for ground loops on SOA/SOB |
 | ADC sampling hits a switching edge (spikes on current traces) | `SAMPLE-INSTANT` — shift the ADC burst offset in `src/foc.cpp` `controlStep` toward the PWM center |
-| Motor stalls under load | `IMAX_A` — current is being clamped; verify hardware limit before raising |
+| Motor stalls under load | `MOTOR_AMPS` — the fixed 0.8 A command; verify the hardware limit before raising |
 
 ---
 
@@ -353,7 +356,7 @@ throughout, not just at cruise.
 | Shaft drifts from its start mark cycle after cycle | The axis is losing steps at the reversal or at peak speed, not accumulating profile error — the profile is exact. Lower peak velocity (`scaleTime()`) or check bus sag |
 | Timing overrun at peak speed | `OVERSAMPLE` (drop to 2) or `SYSCLK` (raise the `set_sys_clock_khz` arg, e.g. 200000 = 200 MHz); see `FLASH-TIMING` note |
 | Oscillation or instability at high speed | `KP` / `KI` — the plant changes at high electrical frequency; lower gains slightly |
-| Hard stop / position error | `IMAX_A` saturating and not delivering enough torque; verify bus voltage and winding resistance |
+| Hard stop / position error | `MOTOR_AMPS` not delivering enough torque, or the `UD_FRAC` derate cutting it back at speed; verify bus voltage and winding resistance |
 
 ---
 
@@ -400,14 +403,14 @@ library is structural code that should not be changed without a design review.
 | `BANDWIDTH` | `BANDWIDTH` | `src/constants.h` | `1000` (rad/s) | Primary knob for PI response speed; change this and `KP_D`/`KP_Q`/`KI` follow automatically |
 | `MOTOR_AMPS` | `MOTOR_AMPS` | `src/constants.h` | `0.8` A | Fixed q-axis current for every closed-loop move, and not exposed to the API. Lower it to buy top speed (`rpm * iq ~ 280` on a 12 V bus), raise it for torque at the cost of that ceiling |
 | `DECOUPLE_FRAC` | `DECOUPLE_FRAC` | `src/constants.h` | `1.0` | Cross-coupling feedforward strength; set `0.0` to A/B test whether it helps this machine |
-| `IMAX_A` | `IMAX_A` | `src/constants.h` | `1.1` A | Current sense range changes (different shunt or gain); also the internal command clamp |
+| `IMAX_A` | `IMAX_A` | `src/constants.h` | `1.1` A | Current sense full-scale range; changes only if the shunt or amplifier gain does. Not a command clamp — the command is the fixed `MOTOR_AMPS` |
 | `ADC_VREF` | `ADC_VREF` | `src/constants.h` | `3.3` V | Measured ADC reference differs from 3.3 V (use a multimeter on the AVDD pin) |
 | `VBUS_V` | `VBUS_V` | `src/constants.h` | `12.0` V | Startup fallback only — the live bus comes from the ADS1015. Update if the supply is not 12 V |
 | `ISENSE-SIGN` | Swap `ADC_SOA_*`/`ADC_SOB_*` channels or negate | `src/adc.cpp` `adcSampleMotor()` | As wired (SOA = phase A, SOB = phase B) | Current polarity inverted vs. expectation from Phase 1 |
 | `PH-DIR` | Sign of `duty_signed` in `pwmSetPhase` | `src/pwm.cpp` `pwmSetPhase()` | Positive duty → PH high | Motor spins opposite to commanded direction |
 | `LED-POL` | `ledDuty` active-low inversion | `src/foc_math.cpp` `ledDuty()` | Active-low (inverted) | Board turns out to have common-anode LED or opposite polarity convention |
-| `CMD-DT` | `delayMicroseconds(500)` in the open-loop phase sketches | `bringup/phase1b_motor.h`, `phase1c_stationary_pi.h`, `phase2_openloop.h` | 500 µs | Rate at which core0 updates the open-loop commanded angle — reduce for a smoother field. Does not apply to phases 3 and 4: there the control ISR generates the angle from the profile, so core0 timing cannot reach it |
-| `FLASH-TIMING` | Mark ISR chain `__not_in_flash_func` | `src/foc.cpp` `controlStep` and hot callees in `src/foc_math.cpp`, `src/pwm.cpp`, `src/adc.cpp` | Not applied | GPIO10 pulse width is wide or jittery even after OVERSAMPLE/SYSCLK tuning — this indicates XIP flash-cache misses adding latency. Apply `__not_in_flash_func` to `controlStep` and the functions it calls (`adcSampleMotor`, `pwmSetPhase`, `piStep`, `park`, `inversePark`). This is a structural change, not a constant, so verify by re-scoping GPIO10 after applying it. |
+| `CMD-DT` | `delayMicroseconds(500)` in the open-loop phase sketches | `bringup/phase1b_motor.h`, `phase2_openloop.h` | 500 µs | Rate at which core0 updates the open-loop commanded angle — reduce for a smoother field. Does not apply to phases 3 and 4: there the control ISR generates the angle from the profile, so core0 timing cannot reach it |
+| `FLASH-TIMING` | Mark ISR chain `__not_in_flash_func` | `src/foc.cpp` `controlStep` and hot callees in `src/foc_math.cpp`, `src/pwm.cpp`, `src/adc.cpp`; `Profile::at` is `always_inline` in `src/profile.h` so it lands in `controlStep`'s own RAM section | Applied | GPIO10 pulse width is wide or jittery even after OVERSAMPLE/SYSCLK tuning — this indicates XIP flash-cache misses adding latency. Apply `__not_in_flash_func` to `controlStep` and the functions it calls (`adcSampleMotor`, `pwmSetPhase`, `piStep`, `park`, `inversePark`). This is a structural change, not a constant, so verify by re-scoping GPIO10 after applying it. |
 
 ### Notes on the Current Sense Range
 
@@ -459,7 +462,7 @@ until all boxes are checked.
   ```
   cd bringup && pio run
   ```
-- [ ] Flash and RAM usage remain within comfortable margins (current builds: RAM ~1.9%, Flash ~0.4%
+- [ ] Flash and RAM usage remain within comfortable margins (current builds: RAM ~3.5%, Flash ~0.5%
       of RP2350 totals — well clear of any limit).
 
 ### Documentation and wiring

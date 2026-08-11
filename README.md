@@ -256,7 +256,7 @@ float busVoltage();            // volts
 An on-board ADS1015 samples the motor bus voltage and the three user channels (AIN1–3) in the
 background — there is nothing to start or poll. A timer started by `begin()` round-robins the four
 channels, weighted so bus voltage refreshes at roughly 1 kHz (the control loop needs it) and each
-user channel at roughly 150–250 Hz. Both calls return the most recent cached sample in volts and
+user channel at roughly 330 Hz. Both calls return the most recent cached sample in volts and
 are non-blocking.
 
 ### Enums
