@@ -280,11 +280,10 @@ void focEnable(Motor m, bool enable) {
   // resuming mid-cruise would then command 1400 Hz electrical at a stationary
   // rotor, which cannot pull in. It would buzz while motorProgress() reported
   // the move completing normally. Re-enabling replays the move from rest.
-  if (!enable) {
-    s_sp[m].ticks = 0;
-    s_sp[m].prog = s_sp[m].cruise ? ProfileState{0.0f, 0.0f, s_sp[m].cruise_vel, 0.0f, false}
-                                  : s_sp[m].prof.at(0.0f);
-  }
+  // prog is deliberately left reporting where the axis actually stopped --
+  // rewinding it too would make a finished-then-disabled axis read back as
+  // position 0, which is what the bringup traces print.
+  if (!enable) s_sp[m].ticks = 0;
   spin_unlock(s_lock, irq);
 }
 
