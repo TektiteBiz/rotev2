@@ -77,8 +77,8 @@ kI = BANDWIDTH * RESISTANCE
 The motor specs are follows (write this in README):
 - Part No: 14HS11-1004
 - Step Angle: 1.8deg
-- Phase Resistance: 3.5ohms
-- Inductance: 3.5mH
+- Phase Resistance: 3.5ohms (datasheet; measures 4.26 on hardware)
+- Inductance: 3.5mH (datasheet; measures 7.0 from ud at speed)
 
 Use the resistance and inductance for the PI tuning above. 
 Use bandwidth = ~160 Hz (so 1000 rad/s)

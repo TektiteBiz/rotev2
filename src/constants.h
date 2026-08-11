@@ -8,13 +8,77 @@ enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 
 // --- Motor 14HS11-1004 ---
 constexpr int POLE_PAIRS = 50;      // 1.8 deg/step -> 200 steps/rev
-constexpr float PHASE_R = 3.5f;     // ohms
-constexpr float PHASE_L = 0.0035f;  // H (Ld = Lq)
+// R and L are MEASURED on hardware (bringup phase 5), not datasheet values.
+// The datasheet's 3.5 ohm / 3.5 mH were both wrong, and this motor turns out
+// to be strongly salient -- Lq is 2.2x Ld -- so a single inductance cannot
+// describe both axes.
+//   R  : 6-point V/I sweep regressed as I vs V, so the slope excludes the
+//        driver's dead-time drop and any sense offset (both land in the
+//        intercept). Cross-checked three ways: sweep 4.074, Ld step response
+//        4.091, alignment hold 4.26 minus the 0.07 V driver offset.
+//   Ld : step response with the rotor parked on phase B, which makes B the
+//        d-axis so the step produces no torque and the rotor cannot move.
+//        R^2 0.9987, and repeatable across runs to 0.01%.
+//   Lq : slope of ud vs (we*iq) over a 100-300 RPM sweep on the running
+//        machine. Standstill cannot measure Lq -- any q-axis current makes
+//        torque and the rotor moves. R^2 0.9998, good to roughly +-5% (the
+//        load angle leaks a little back-EMF into ud).
+// Ld < Lq is expected here: the magnet sits in the d-axis flux path with
+// mu_r ~ 1, so the d-axis is the high-reluctance one.
+//
+// CONFIRMED: at 0.5 A the drive tops out at 560 RPM on a 12.12 V bus, which
+// back-solves to Lq = 8.27 mH -- 1.9% from the measured 8.43. The ceiling is
+// where |ud| = we*Lq*iq reaches the bus, since ud is by far the largest term
+// (uq measured only 0.8 V at 300 RPM and falling). That gives
+//        rpm_max * iq ~= 280        on a 12 V bus
+// so speed and current trade directly, and the only levers on the ceiling
+// are less current, more bus, or a smaller Lq.
+//
+// CAVEAT: Lq is measured at 0.5 A only, and iron saturates, so Lq(I) is
+// expected to fall at higher current -- which would make the high-current
+// ceiling better than the relation above predicts and leave KP_Q over-gained
+// there. Not yet measured; sweep LQ_AMPS in bringup phase 5 to find out.
+constexpr float PHASE_R  = 4.074f;    // ohms, measured (datasheet says 3.5)
+constexpr float PHASE_LD = 0.0038231f;  // H, measured (datasheet says 3.5 mH)
+constexpr float PHASE_LQ = 0.0084265f;  // H, measured -- sets ud at speed
 
-// --- Control (PI pole placement) ---
-constexpr float BANDWIDTH = 1000.0f;       // rad/s
-constexpr float KP = BANDWIDTH * PHASE_L;  // 3.5
-constexpr float KI = BANDWIDTH * PHASE_R;  // 3500
+// --- Control (PI pole placement, per axis) ---
+// Each axis places its controller zero on its own plant pole: the d-axis
+// plant is 1/(Ld*s + R) with a pole at -R/Ld, so the zero must sit at
+// KI/KP_D = R/Ld, which falls out of KP_D = BW*Ld with a SHARED KI = BW*R.
+// The same holds for q. So KP differs per axis and KI does not.
+constexpr float BANDWIDTH = 1000.0f;         // rad/s, both axes
+constexpr float KP_D = BANDWIDTH * PHASE_LD; // 3.82
+constexpr float KP_Q = BANDWIDTH * PHASE_LQ; // 8.43
+constexpr float KI   = BANDWIDTH * PHASE_R;  // 4074
+
+// --- Voltage-limited torque derate ---
+// ud = -we*Lq*iq grows with BOTH speed and current, and on a 12 V bus it is
+// what runs out first (uq measured only 0.8 V at 300 RPM and falling). The
+// only lever on ud is iq, so when ud starts eating the bus the right answer
+// is to command less current, not to throw away torque. Trading current for
+// speed this way lets the drive ride the voltage limit instead of falling
+// off it, and it self-tunes: the derate is driven by the ud the PI actually
+// produces, so it needs no speed estimate and no Lq value -- which matters,
+// because Lq falls with current and is not well characterised above 0.5 A.
+constexpr float UD_FRAC = 0.85f;    // of the bus that ud may consume
+constexpr float IQ_MIN = 0.05f;     // floor on the derated current command
+
+// --- Control delay compensation ---
+// Current is sampled at the top of the ISR, the duty computed from it is
+// applied at the NEXT ISR for this motor (+1 tick) and then held for a whole
+// tick, so the voltage lands ~1.5 ticks after the measurement. At 700 RPM
+// that is 125 us = 26 electrical degrees of stale angle, which rotates the
+// applied vector backwards and visibly distorts the phase currents. The
+// inverse Park therefore runs at theta_e + we*COMP_TICKS*dt while the
+// forward Park stays at the angle the sample was actually taken at.
+constexpr float COMP_TICKS = 1.5f;
+
+// Cross-coupling decoupling strength. 1.0 = full, 0.0 = off (set 0 to A/B
+// test it -- it is not yet established that it helps this machine).
+constexpr float DECOUPLE_FRAC = 1.0f;
+constexpr float WE_ALPHA = 0.02f;   // speed-estimator LPF, position mode only
+constexpr float LQ_ALPHA = 0.001f;  // online Lq estimator LPF (~80 ms)
 
 // --- Current sense (INA181A2, 30 mohm, REF 1.65V, 3.3V ADC) ---
 constexpr float SHUNT_OHMS = 0.03f;

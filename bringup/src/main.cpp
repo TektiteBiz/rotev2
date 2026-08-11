@@ -11,4 +11,6 @@
   #include "../phase3_foc.h"
 #elif PHASE == 4
   #include "../phase4_full.h"
+#elif PHASE == 5  // R/L characterization
+  #include "../phase5_rl.h"
 #endif
