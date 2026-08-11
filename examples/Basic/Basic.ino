@@ -1,5 +1,6 @@
 // Basic.ino - minimal RotEv2 usage example
-// Runs MOTOR_1 back and forth: 100 rad out, 100 rad back, forever.
+// Runs MOTOR_1 back and forth: 100 rad out, 100 rad back, forever,
+// chirping on the buzzer each time a leg lands.
 //
 // NOTE: The rotev library owns core1 for its control loop.
 // Do NOT define setup1() or loop1() in your sketch.
@@ -11,6 +12,18 @@ using namespace rotev;
 static Profile fwd;
 static Profile back;
 static bool going_out = true;
+
+// Rising three-note chirp. buzzerOn() retunes while already sounding, so
+// there is no need to switch it off between notes. Frequencies are clamped
+// to 1-4 kHz by the library.
+static void playDone() {
+  const uint16_t notes[] = {1500, 2000, 3000};
+  for (uint16_t f : notes) {
+    buzzerOn(f);
+    delay(70);
+  }
+  buzzerOff();
+}
 
 void setup() {
   Serial.begin(115200);
@@ -32,6 +45,7 @@ void loop() {
   // The profile is executed by the control loop on core1, so all this loop
   // has to do is hand over the next leg once the current one lands.
   if (st.done) {
+    playDone();
     going_out = !going_out;
     motorSetProfile(MOTOR_1, going_out ? fwd : back);
   }
