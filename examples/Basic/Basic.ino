@@ -82,8 +82,19 @@ void loop() {
 
   ProfileState s1 = motorProgress(MOTOR_1);
   ProfileState s2 = motorProgress(MOTOR_2);
-  Serial.printf("vbus %.2f V  t %.2f s  m1 %.1f rad %.1f rad/s  m2 %.1f rad %.1f rad/s\n",
-                busVoltage(), s1.t, s1.pos, s1.vel, s2.pos, s2.vel);
+  Serial.print("vbus ");
+  Serial.print(busVoltage(), 2);
+  Serial.print(" V  t ");
+  Serial.print(s1.t, 2);
+  Serial.print(" s  m1 ");
+  Serial.print(s1.pos, 1);
+  Serial.print(" rad ");
+  Serial.print(s1.vel, 1);
+  Serial.print(" rad/s  m2 ");
+  Serial.print(s2.pos, 1);
+  Serial.print(" rad ");
+  Serial.print(s2.vel, 1);
+  Serial.println(" rad/s");
 
   // The profiles are executed by the control loop on core1, so all this loop
   // has to do is hand over the next leg once the current one lands. Both

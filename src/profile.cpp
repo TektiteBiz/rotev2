@@ -82,12 +82,21 @@ Profile Profile::scaleTime(float k) const {
 void Profile::print() const {
 #ifdef ARDUINO
   if (!valid()) { Serial.println("Profile: <empty>"); return; }
-  Serial.printf("Profile: %.3f rad in %.3f s\n", distance(), duration());
-  Serial.printf("  peak vel   %.3f rad/s (%.1f rpm)\n", maxVelocity(),
-                maxVelocity() * 60.0f / (2.0f * PI_F));
-  Serial.printf("  peak accel %.3f rad/s^2\n", maxAccel());
-  Serial.printf("  accel      %.3f s   cruise %.3f s   decel %.3f s\n",
-                accelTime(), cruiseTime(), decelTime());
+  // Serial.printf() lands in a vsnprintf() linked without float support, so
+  // %f silently prints nothing. Use Serial.print(value, decimals) instead.
+  Serial.print("Profile: ");     Serial.print(distance(), 3);
+  Serial.print(" rad in ");      Serial.print(duration(), 3);
+  Serial.println(" s");
+  Serial.print("  peak vel   "); Serial.print(maxVelocity(), 3);
+  Serial.print(" rad/s (");
+  Serial.print(maxVelocity() * 60.0f / (2.0f * PI_F), 1);
+  Serial.println(" rpm)");
+  Serial.print("  peak accel "); Serial.print(maxAccel(), 3);
+  Serial.println(" rad/s^2");
+  Serial.print("  accel      "); Serial.print(accelTime(), 3);
+  Serial.print(" s   cruise "); Serial.print(cruiseTime(), 3);
+  Serial.print(" s   decel ");  Serial.print(decelTime(), 3);
+  Serial.println(" s");
 #else
   if (!valid()) { std::printf("Profile: <empty>\n"); return; }
   std::printf("Profile: %.3f rad in %.3f s\n", (double)distance(), (double)duration());
