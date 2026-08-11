@@ -26,6 +26,7 @@ static float    s_we[2] = {0.0f, 0.0f};      // electrical speed, rad/s
 static float    s_prev_te[2] = {0.0f, 0.0f};
 static bool     s_we_primed[2] = {false, false};
 static float    s_lq[2] = {PHASE_LQ, PHASE_LQ};  // online Lq, tracks saturation
+static uint32_t s_hold[2] = {0, 0};              // ticks since theta_e moved
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
 // Pre-computed duties applied at the very start of the next ISR invocation,
@@ -82,7 +83,7 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
 
   if (!sp.enabled) {
     piReset(s_pid[m]); piReset(s_piq[m]); s_derate[m] = 1.0f;
-    s_we[m] = 0.0f; s_we_primed[m] = false; s_lq[m] = PHASE_LQ;
+    s_we[m] = 0.0f; s_we_primed[m] = false; s_lq[m] = PHASE_LQ; s_hold[m] = 0;
     s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
     return;
   }
@@ -99,12 +100,24 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     we = sp.vel * (float)POLE_PAIRS;
     s_we[m] = we;
   } else if (!s_we_primed[m]) {
-    s_prev_te[m] = theta_e; s_we_primed[m] = true; we = 0.0f;
+    s_prev_te[m] = theta_e; s_we_primed[m] = true; s_hold[m] = 0; we = 0.0f;
   } else {
+    // In position mode theta_mech is written by core0, whose loop may run far
+    // slower than this 12 kHz tick -- so theta_e arrives as a staircase, flat
+    // for several ticks and then jumping. Differencing every tick would read
+    // 0,0,0,0,huge and hand a violently spiky we to the derate, the
+    // decoupling and the delay compensation all at once. Count the ticks the
+    // angle sat still and divide by the time that actually elapsed instead.
     float d = theta_e - s_prev_te[m];
     if (d > PI_F) d -= TWO_PI_F; else if (d < -PI_F) d += TWO_PI_F;
-    s_prev_te[m] = theta_e;
-    s_we[m] += WE_ALPHA * (d / CTRL_DT - s_we[m]);
+    ++s_hold[m];
+    if (fabsf(d) > 1e-6f) {
+      s_we[m] += WE_ALPHA * (d / (s_hold[m] * CTRL_DT) - s_we[m]);
+      s_prev_te[m] = theta_e;
+      s_hold[m] = 0;
+    } else if (s_hold[m] * CTRL_DT > WE_TIMEOUT_S) {
+      s_we[m] = 0.0f;  // genuinely stopped, not just between updates
+    }
     we = s_we[m];
   }
 
