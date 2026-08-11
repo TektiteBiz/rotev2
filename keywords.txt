@@ -2,18 +2,47 @@
 # Syntax Coloring Map for RotEv2 #
 ##################################
 
+# Types (KEYWORD1)
+Profile	KEYWORD1
+ProfileState	KEYWORD1
+Motor	KEYWORD1
+Button	KEYWORD1
+AdcChannel	KEYWORD1
+
 # Functions (KEYWORD2)
 begin	KEYWORD2
 motorEnable	KEYWORD2
-motorDisable	KEYWORD2
-motorWrite	KEYWORD2
+motorSetProfile	KEYWORD2
+motorProfile	KEYWORD2
+motorProgress	KEYWORD2
+buzzerOn	KEYWORD2
+buzzerOff	KEYWORD2
 ledColor	KEYWORD2
 buttonPressed	KEYWORD2
-motorCurrentA	KEYWORD2
-motorCurrentB	KEYWORD2
+adcRead	KEYWORD2
+busVoltage	KEYWORD2
+
+# Profile methods (KEYWORD2)
+fromVelAccel	KEYWORD2
+fromTimeAccel	KEYWORD2
+scaleDistance	KEYWORD2
+scaleTime	KEYWORD2
+distance	KEYWORD2
+duration	KEYWORD2
+maxVelocity	KEYWORD2
+maxAccel	KEYWORD2
+accelTime	KEYWORD2
+cruiseTime	KEYWORD2
+decelTime	KEYWORD2
+valid	KEYWORD2
+at	KEYWORD2
+print	KEYWORD2
 
 # Constants / enum values (LITERAL1)
 MOTOR_1	LITERAL1
 MOTOR_2	LITERAL1
 BTN_STOP	LITERAL1
 BTN_GO	LITERAL1
+ADC_AIN1	LITERAL1
+ADC_AIN2	LITERAL1
+ADC_AIN3	LITERAL1

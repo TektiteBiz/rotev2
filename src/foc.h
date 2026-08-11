@@ -1,15 +1,24 @@
 #pragma once
 #include "constants.h"
 #include "foc_math.h"
+#include "profile.h"
+
 namespace rotev {
+
 void focStart();
-void focSetpoint(Motor m, float theta_mech, float iq_cmd, bool enabled);
-void focSetVelocity(Motor m, float vel_rad_s, float iq_cmd, bool enabled);
-void focSetProfile(Motor m, float theta_mech, float vel_rad_s, float acc_rad_s2, float iq_cmd, bool enabled);
-void focSetVoltage(Motor m, float theta_mech, float uq_volts, bool enabled);
-void focSetVoltageAB(Motor m, float va_duty, float vb_duty, bool enabled);
-AB   focTelemetry(Motor m);
-float focDerate(Motor m);      // voltage-limited iq scaling, 1.0 = none
-DQ   focTelemetryU(Motor m);   // applied dq voltage, post-clamp
-DQ   focTelemetryI(Motor m);   // measured dq current
-}
+
+// Command modes. Setting one replaces whatever the motor was doing.
+void focEnable(Motor m, bool enable);
+void focSetProfile(Motor m, const Profile& p);  // restarts the profile clock at 0
+void focSetVelocity(Motor m, float vel_rad_s);  // degenerate profile: cruise forever
+void focSetVoltage(Motor m, float theta_mech, float uq_volts);
+void focSetVoltageAB(Motor m, float va_duty, float vb_duty);
+
+Profile      focProfile(Motor m);
+ProfileState focProgress(Motor m);
+
+AB focTelemetry(Motor m);    // measured phase currents
+DQ focTelemetryU(Motor m);   // applied dq voltage, post-clamp
+DQ focTelemetryI(Motor m);   // measured dq current
+
+}  // namespace rotev

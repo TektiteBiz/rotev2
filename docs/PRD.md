@@ -73,24 +73,25 @@ is silently inert with driver power off.
 High frequency FOC will be implemented and run. The specifications are:
 - 24kHz PWM frequency (with 12kHz control loop for each motor, alternating between motor 1 and motor 2)
 - Need to be able to disable the control and each driver via nSLEEP (e.g. motorEnable(MOTOR_1) type of thing)
-- Need to be able to write current and theta to each motor (e.g. motorWrite(100, 1, MOTOR_1) for 100 rad, 1 amp)
-- Three ways to command a motor, and they are NOT interchangeable:
-  - `motorWrite(theta, amps, m)` -- absolute position. The commanded field is
-    only as fine as the caller's loop rate, and it freezes for the whole of any
-    caller stall.
-  - `motorWriteVelocity(rad_s, amps, m)` -- the ISR integrates the angle on its
-    own 83.3 us tick, so nothing the caller does can inject an angle step.
-    Correct when there is no position target (phase 3).
-  - `motorWriteProfile(theta, rad_s, amps, m)` -- position authoritative, plus a
-    velocity feedforward interpolating the gap since the last update (capped,
-    so a wedged caller cannot run the axis away). Correct for position profiles
-    (phase 4): velocity-only would leave the caller's integral and the ISR's as
-    two independent sums of the same velocity, drifting apart with nothing to
-    correct them.
+- The caller does not command position, velocity or current directly. It hands
+  the ISR a motion PROFILE and the ISR executes it (`motorSetProfile(m, p)`).
+  The profile computation has to happen inside the FOC tight loop: a commanded
+  field generated on core0 is only as fine as the caller's loop rate and
+  freezes for the whole of any caller stall, which lands directly on the field
+  as torque ripple. Generating it on the hardware-timed control tick removes
+  the caller's timing from the picture entirely.
+- `Profile` (see `src/profile.h`) is trapezoidal in velocity -- constant
+  acceleration to a cruise speed, then constant deceleration -- so the position
+  it integrates to is the S curve. It is constructible from distance plus max
+  velocity and acceleration, from distance plus a target time and acceleration,
+  or by scaling an existing profile's distance or time.
+- Current is fixed internally at `MOTOR_AMPS` (0.8 A) and is not exposed.
+- The caller can read back the active profile (`motorProfile`) and its progress
+  -- time, position, velocity, acceleration, done (`motorProgress`).
 - Telemetry needed for bringup and tuning: per-motor phase currents, dq
-  currents, applied dq voltages, and the active derate factor; plus live bus
-  voltage. Without dq telemetry the loop is effectively unobservable -- see
-  Known Pitfalls.
+  currents and applied dq voltages, plus live bus voltage. Without dq
+  telemetry the loop is effectively unobservable -- see Known Pitfalls. This
+  is not part of the user-facing API; it lives in `src/rotev_internal.h`.
 
 Implementation-wise, there must be
 - Center aligned PWM for SVPWM
@@ -256,8 +257,8 @@ enough torque to overcome this motor's detent/static friction, so it just buzzes
 place instead of rotating even with a correct startup ramp. See Known Pitfalls.)
 
 ### Phase 3: Simple closed-loop FOC
-Enable the PI controllers, constant velocity, on BOTH motors. Commands
-velocity (`motorWriteVelocity`) since there is no position target here.
+Enable the PI controllers, constant velocity, on BOTH motors. Runs one long
+profile whose cruise phase dominates, so the axis spends minutes at speed.
 
 Because there is no position sensor, the loop park-transforms the measured
 current onto the COMMANDED angle -- which is false at power-up, when the real
@@ -279,7 +280,7 @@ voltage min/max, and per-motor sensA/sensB/ud/uq/id/iq/derate.
 
 ### Phase 4: Full library
 Trapezoidal position profile to 100 rotations on BOTH motors, peak 400 RPM,
-via `motorWriteProfile` (position authoritative + velocity feedforward).
+via `motorSetProfile` (position authoritative + velocity feedforward).
 Exercises the decoupling, the voltage derate and the delay compensation
 together under acceleration.
 

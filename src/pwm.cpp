@@ -9,7 +9,6 @@ namespace rotev {
 
 static uint16_t s_top = 0;
 
-uint16_t pwmTop() { return s_top; }
 
 // Initializes the physical slice shared by pin's channel and its aliased
 // partner. Call exactly once per unique slice -- pwm_init() resets BOTH
