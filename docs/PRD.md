@@ -57,42 +57,190 @@ GPIOs 10, 11, 12, and 13 are meant for use by the user, but will also be used du
 - 17: SCL
 - 24, 25: General GPIO, cannot do PWM since overlaps with LED PWM slice
 
-## ADIS1015 ADC
+## ADS1015 ADC
 On I2C1 (GPIO 18/19) there is an ADS1015IRUGR ADC. AIN0 on this ADC is connected to bus voltage with a voltage divider with 7.3kohm on the high side and 2.2kohm on the low side. This needs to be sampled at ~1khz for the FOC loop inverse park. AIN1-3 are exposed to the user so consider how to display them to the user too.
+
+The driver samples in a repeating-timer callback doing blocking I2C. Measured
+in service the bus reads 12.12-12.17 V with a 0.07 V spread, i.e. neither sag
+nor meaningful sampling noise, so the live value behaves like the 12.0 V
+constant it replaced. Two caveats worth keeping in mind: the I2C return codes
+are currently ignored, so a failed transaction writes uninitialised stack into
+the cached voltage; and a bus voltage of 0 (drivers unpowered) sends
+inversePark down its `inv = 0` path and trips the voltage backstop, so the FOC
+is silently inert with driver power off.
 
 # FOC
 High frequency FOC will be implemented and run. The specifications are:
 - 24kHz PWM frequency (with 12kHz control loop for each motor, alternating between motor 1 and motor 2)
 - Need to be able to disable the control and each driver via nSLEEP (e.g. motorEnable(MOTOR_1) type of thing)
 - Need to be able to write current and theta to each motor (e.g. motorWrite(100, 1, MOTOR_1) for 100 rad, 1 amp)
+- Three ways to command a motor, and they are NOT interchangeable:
+  - `motorWrite(theta, amps, m)` -- absolute position. The commanded field is
+    only as fine as the caller's loop rate, and it freezes for the whole of any
+    caller stall.
+  - `motorWriteVelocity(rad_s, amps, m)` -- the ISR integrates the angle on its
+    own 83.3 us tick, so nothing the caller does can inject an angle step.
+    Correct when there is no position target (phase 3).
+  - `motorWriteProfile(theta, rad_s, amps, m)` -- position authoritative, plus a
+    velocity feedforward interpolating the gap since the last update (capped,
+    so a wedged caller cannot run the axis away). Correct for position profiles
+    (phase 4): velocity-only would leave the caller's integral and the ISR's as
+    two independent sums of the same velocity, drifting apart with nothing to
+    correct them.
+- Telemetry needed for bringup and tuning: per-motor phase currents, dq
+  currents, applied dq voltages, and the active derate factor; plus live bus
+  voltage. Without dq telemetry the loop is effectively unobservable -- see
+  Known Pitfalls.
 
 Implementation-wise, there must be
 - Center aligned PWM for SVPWM
 - No clarke transform is needed since the currents are already in alpha-beta frame
 - For park transform, assume the rotor is at the target position, and run PI control
-- Run PI with pole placement as follows:
-kP = BANDWIDTH * INDUCTANCE
-kI = BANDWIDTH * RESISTANCE
+- Run PI with pole placement, PER AXIS (the machine is salient, so a single
+  gain cannot place both poles):
+kP_d = BANDWIDTH * Ld
+kP_q = BANDWIDTH * Lq
+kI   = BANDWIDTH * R      (SHARED between the two axes)
+
+kI is deliberately not split. Each axis must place its controller zero on its
+own plant pole: the d-axis plant is 1/(Ld*s + R) with a pole at -R/Ld, so the
+zero belongs at kI/kP_d = R/Ld, which falls out of kP_d = BW*Ld with a shared
+kI = BW*R. The same holds for q. The saliency lives entirely in kP.
 
 The motor specs are follows (write this in README):
 - Part No: 14HS11-1004
 - Step Angle: 1.8deg
-- Phase Resistance: 3.5ohms (datasheet; measures 4.26 on hardware)
-- Inductance: 3.5mH (datasheet; measures 7.0 from ud at speed)
+- Phase Resistance: 3.5ohms  (datasheet -- WRONG, see below)
+- Inductance: 3.5mH          (datasheet -- WRONG, see below)
 
-Use the resistance and inductance for the PI tuning above. 
+### Measured motor parameters (these supersede the datasheet)
+
+Both datasheet figures are wrong, and the inductance is wrong by more than 2x
+in the direction that costs top speed. Bringup phase 5 measures them on real
+hardware. The values below are the mean of two motors, which agreed to within
+1.6% on R, 1.5% on Ld and 3.6% on Lq.
+
+| Parameter | Measured | Datasheet |
+|---|---|---|
+| R (winding + Rds(on) + shunt) | 4.0417 ohm | 3.5 |
+| Ld | 3.7946 mH | 3.5 |
+| Lq | 8.2764 mH | 3.5 |
+| saliency Lq/Ld | 2.16 - 2.20 | not given |
+
+**The machine is salient.** Lq is ~2.2x Ld, which is expected for a hybrid
+stepper -- the magnet sits in the d-axis flux path with mu_r ~ 1, making d the
+high-reluctance axis -- but it means one inductance constant cannot describe
+both axes. The datasheet's 3.5 mH is roughly Ld; nobody published Lq, and Lq
+is the one that governs high-speed behaviour.
+
+**Lq falls with current** (iron saturation), roughly 8.3 mH at 0.5 A trending
+toward 6 mH at 1.0 A. The runtime therefore does not trust the constant: it
+maintains a per-motor ONLINE Lq estimate from |ud|/(we*|iq|). PHASE_LQ only
+seeds that estimate and sets kP_q and the decoupling feedforward.
+
+**lambda_m (magnet flux) is NOT reliably measured.** The phase 5 extraction
+returns a negative value with poor fit quality on both motors, and the two
+motors disagree by 10x on it while agreeing to within 4% on everything else --
+so the method is broken, not the motors. Do not use the printed Kt. Two
+independent facts bound it instead: the 1700 RPM ceiling requires
+lambda_m <= 0.67 mWb, hence Kt <= 0.033 N.m/A. That is far below what the
+datasheet holding torque suggests, and it explains why the drive runs out of
+torque so readily at low current.
+
+Use the resistance and inductances for the PI tuning above.
 Use bandwidth = ~160 Hz (so 1000 rad/s)
 
-Additionally, do lag compensation:
+### Cross-coupling decoupling ("lag compensation")
 
 Ud_compensation = −ωe · Lq · Iq
 Uq_compensation = +ωe · Ld · Id
 
 So in the end:
-Uq = PIq(Iq_setpoint − Iq_measured) + ωe·Ld·Id
-Ud = PId(0 − Id_measured) − ωe·Lq·Iq
+Uq = PIq(Iq_setpoint − Iq_measured) + ωe·Ld·Id_setpoint
+Ud = PId(0 − Id_measured) − ωe·Lq·Iq_setpoint
+
+**Feed these from the current COMMAND, never the measurement.** Using measured
+Id/Iq closes a loop Ud -> Id -> Uq -> Iq -> Ud whose gain is
+(we*Lq)(we*Ld)/(Zd*Zq); at speed Zd -> we*Ld and Zq -> we*Lq, so the gain
+approaches exactly 1 -- marginally stable before the pipeline delay is even
+counted -- and it multiplies current-sense ripple by we*Lq, which is 30 V/A at
+690 RPM. Measured on hardware: the measured-current form dropped the ceiling
+from 690 RPM to 550 RPM. Since Id_setpoint is always 0, only the d-axis term
+survives in practice.
+
+Note *why* this is needed, because it is not the usual reason. As a
+DISTURBANCE the coupling is DC in the dq frame and the integrator rejects it
+almost perfectly (~0.5 mA of error through a 2 s ramp), so deleting it looks
+harmless at low speed and did in fact pass review once on that argument. It
+matters because it couples the two regulators DYNAMICALLY: once we exceeds
+BANDWIDTH the axes drive each other faster than either loop can respond. The
+signature is unmistakable -- phase currents that are garbage while spinning
+and a perfect sine the instant the rotor is stopped and we goes to zero.
 
 Implement a tight loop with proper ADC sampling timing, proper center-aligned PWM, etc.
+
+## Voltage limit, current derate, and the speed ceiling
+
+On a 12 V bus this drive runs out of VOLTAGE long before it runs out of
+current, and ud is what consumes it:
+
+    ud = -we * Lq * iq          (uq measured only 0.8 V at 300 RPM, and falling)
+
+The only lever on ud is iq, so the correct response to running out of voltage
+is to command LESS CURRENT, not to throw torque away. Each control cycle:
+
+    iq_max = UD_FRAC * vbus / (|we| * Lq_online)      UD_FRAC = 0.85
+
+This trades current for speed automatically, so the drive rides the voltage
+limit rather than falling off it, and no hand-tuned current-per-speed table is
+needed.
+
+**The limit must be feedforward from speed, not feedback from measured ud.**
+piStep already clamps its output to +-vbus, so |ud| can never be *observed*
+exceeding the bus and a feedback version can never derate by more than
+(1 - UD_FRAC). Measured on hardware: a feedback derate targeting 0.85 of the
+bus actually delivered 0.995 and sat pinned at the backstop continuously.
+
+A backstop still clamps |u| to vbus, scaling ud and uq TOGETHER so the applied
+vector keeps its angle (an earlier version zeroed uq outright, which removed
+all torque at exactly the speed where torque was needed and turned the ceiling
+into a cliff). It must also pull the PI integrators down by the same factor:
+piStep's anti-windup only sees its own per-axis +-vbus limit and cannot
+observe the later scaling.
+
+**The |u| <= vbus circle is correct here, not conservative.** Two independent
+H-bridges do give a square limit reaching sqrt(2)*vbus on the diagonals, but
+for a ROTATING vector va = |u|*cos(theta+phi) sweeps the full amplitude every
+cycle, so |va| <= vbus requires |u| <= vbus. The square only helps a
+stationary vector. The remaining lever on voltage is overmodulation (the
+square-wave fundamental reaches 4/pi * vbus, ~27% more, at the cost of
+deliberate harmonics), not a different clamp shape.
+
+Measured behaviour: speed and current trade directly, rpm_max * iq ~= 280 at
+0.5 A rising to ~370 at 1.0 A (the product is not constant because Lq
+saturates). Lower current is monotonically faster until torque runs out;
+below ~0.3 A the motor is torque-limited instead. With the derate active the
+drive reached **1700 RPM**, against ~400 RPM before the parameters were
+corrected.
+
+## Control delay compensation
+
+Current is sampled at the top of the ISR; the duty computed from it is applied
+at the NEXT ISR for that motor and then held for a full tick, so the voltage
+lands ~1.5 ticks after the measurement. At 700 RPM that is 125 us = 26
+electrical degrees of stale angle, which rotates the applied vector backwards
+and visibly distorts the phase currents. The inverse Park therefore runs at
+theta_e + we*COMP_TICKS*dt, while the forward Park stays at the angle the
+sample was actually taken at.
+
+## Control-rate limit
+
+The commanded field advances in steps of
+(rpm/60)*360*POLE_PAIRS/(PWM_HZ/2) electrical degrees -- i.e. **rpm/40** at
+24 kHz. FOC generally wants 20+ updates per electrical cycle; at 1700 RPM
+there are only 8.5, which is why the current cannot look like a clean sine up
+there regardless of voltage headroom. The only lever is PWM_HZ, traded against
+ISR budget.
 
 ## Bringup
 - The board will be brought up in phases (so make some test programs as a sub-folder that reference the library in the exterior folder that can be deployed to the board, can use development environments but it shouldn't interfere with the libraries use as a library)
@@ -108,10 +256,61 @@ enough torque to overcome this motor's detent/static friction, so it just buzzes
 place instead of rotating even with a correct startup ramp. See Known Pitfalls.)
 
 ### Phase 3: Simple closed-loop FOC
-Enable the PI controllers but don't worry about lag compensation, simply do basic FOC and allow setting the current and running S curves or simple constant velocity
+Enable the PI controllers, constant velocity, on BOTH motors. Commands
+velocity (`motorWriteVelocity`) since there is no position target here.
+
+Because there is no position sensor, the loop park-transforms the measured
+current onto the COMMANDED angle -- which is false at power-up, when the real
+rotor angle is arbitrary. The velocity ramp from zero resolves this on its
+own: for its first moments the commanded field is barely moving while already
+carrying full current, which is exactly an alignment hold, and the rotor is
+captured long before the speed is high enough to outrun it. A separate
+explicit align stage was tried and removed as redundant.
+
+Holding a stationary field at a known current is still the right way to check
+the current-sense GAIN, since with the rotor still there is no back-EMF and no
+di/dt and uq reduces to Ohm's law (`I_actual * R + V_offset`). That comparison
+is what verified this board's sense chain to 0.3%, and it is worth repeating
+on any new board before trusting a current number -- phase 5's alignment stage
+does exactly this as its first step.
+
+Logs loop rate, worst-case loop dt, electrical degrees per field step, bus
+voltage min/max, and per-motor sensA/sensB/ud/uq/id/iq/derate.
 
 ### Phase 4: Full library
-Implement lag compensation and test S curves up to 100 rotations and 300rpm
+Trapezoidal position profile to 100 rotations on BOTH motors, peak 400 RPM,
+via `motorWriteProfile` (position authoritative + velocity feedforward).
+Exercises the decoupling, the voltage derate and the delay compensation
+together under acceleration.
+
+### Phase 5: R / Ld / Lq characterization
+Measures the motor parameters the datasheet gets wrong. Open-loop voltage
+(`focSetVoltageAB`, no PI in the path) plus the existing current sense.
+
+- **R** -- 6-point V/I sweep regressed as I vs V. Using the SLOPE rather than
+  any single V/I point makes it immune to current-sense offset and to the
+  driver's fixed dead-time drop; both land in the intercept, which is reported
+  separately as a diagnostic.
+- **Ld** -- step response with the rotor parked by DC current on phase B,
+  which makes B the d-axis so the step produces zero torque and the rotor
+  cannot move. Fitted by weighted least squares on ln(residual) vs t: the
+  SLOPE carries tau, so the (variable, ~125 us) pipeline delay lands in the
+  intercept and cancels. Weighting by r^2 and cutting the window at r > 0.15
+  removes the Jensen bias of the log transform; 16 averaged captures take the
+  spread to ~0.2%. Verified in simulation before being written to firmware.
+- **Lq** -- CANNOT be measured at standstill: any q-axis current makes torque
+  and the rotor moves, and it cannot be restrained by hand (the locked-rotor
+  attempt returned R^2 0.95 with R_step 19% high). Measured instead on the
+  SPINNING machine, where id is held at 0 and ud = -we*Lq*iq is a straight
+  line through a 100-300 RPM sweep. R^2 0.9999.
+
+Self-checks printed: R from the sweep vs R from the step (should agree to
+~1%), fit R^2 for each, both regression intercepts (should be ~0), per-point
+id during the speed sweep (off-zero means lost sync), and a raw CSV dump of
+the averaged step captures so the exponential can be eyeballed.
+
+Run from cold: the routine dissipates enough to warm the winding, and R
+measurably tracks temperature at +0.39%/degC.
 
 Document library use properly in README.md. Do everything with the consideration that this repository will be published as a platformio library.
 
@@ -159,3 +358,104 @@ never assume a pin keeps whatever GPIO function `hwInit()` gave it — if a late
 that pin's slice for any reason, explicitly re-assert the function/level you actually want
 afterward, or (better, as done in the final design) restructure so nothing ever needs to touch a
 pin's function twice with conflicting intents.
+
+### A `volatile` struct field that is never copied out reads as stack garbage
+`controlStep()` snapshots the shared `Setpoint` into a local under the spinlock,
+one field at a time. Two fields (`ab_mode`, `vb_duty`) were never assigned — and
+because the local is uninitialised, `if (sp.ab_mode)` was testing whatever was on
+the stack. It consistently read false, so the direct-duty branch never ran and
+execution silently fell through to the closed-loop PI, which then interpreted
+`iq_cmd` as an amps command when the caller had stored a *duty* there. Every
+caller of that mode commanded zero current and got zero current: phase 1c had
+never worked as designed, and phase 5 initially reported `R = -72785 ohm`
+because every point in its sweep measured no current at all. The user-visible
+symptoms — nothing felt on the shaft, no supply draw — were the diagnosis; the
+numbers were just an honest reading of a winding carrying nothing. Worth noting
+this also invalidated the `ISENSE_SCALE` sign calibration, which had been
+performed with phase 1c. When adding a field to a struct that is snapshotted
+field-by-field, add the copy in the same commit, and prefer initialising the
+local so a missed field fails loudly rather than plausibly.
+
+### The setpoint refresh rate, not the ISR rate, quantizes the commanded field
+The control ISR can only act on the angle the caller last handed it, so the
+commanded field advances in steps of `(rpm/60)*360*POLE_PAIRS*T_caller`. A
+`delayMicroseconds(500)` in the bringup loop meant 528 us per iteration, which
+at 500 RPM is a **79 degree** electrical jump per update — a quarter cycle at a
+time, not a rotating vector. It was plainly audible as clicking and roughness,
+and it eats pull-out margin because the instantaneous load angle swings by half
+the step. Deleting one delay line took the step to the ISR-rate floor of 12.5
+degrees and the motor went "basically silent". Note the winding is a low-pass
+(tau = L/R ~ 1 ms) so the *current* still looks like a decent sine while the
+*command* is a coarse staircase — the scope will not show you this.
+
+### The current waveform cannot tell you whether the rotor is turning
+With no position sensor, the loop parks measured current onto the COMMANDED
+angle, so the regulator produces a textbook rotating current vector whether the
+rotor follows or sits dead still. It looks *better* when stalled, because a
+stationary rotor generates no back-EMF and `uq` only has to supply `R*iq`. A
+perfect sine at 400 RPM is therefore fully consistent with a stalled motor. Use
+`uq` as the discriminator: back-EMF exists only if the rotor is moving, so a `uq`
+near `R*iq` means stalled regardless of how clean the phase currents look. Hours
+were spent debugging a current loop that was working correctly the whole time.
+
+### Unbounded float angle accumulation stalls silently as the loop gets faster
+`theta` accumulated without wrapping. Float resolution scales with magnitude, so
+once theta passes ~5000 rad the per-iteration increment (2.6e-4 rad at 500 RPM
+with a 5 us loop) vanishes into rounding entirely and the motor quietly stops
+advancing. It was safe only because the loop was slow enough that the increment
+was 100x larger — speeding the loop up is exactly what triggers it. `POLE_PAIRS`
+is an integer, so wrapping mechanical angle at 2*PI is exactly 50 whole
+electrical cycles and leaves `electricalAngle()` bit-for-bit unchanged. Phase 4's
+profile position needs `double` for the same reason: its 628 rad target is where
+float resolution (6e-5) approaches one iteration's increment.
+
+### A clamped signal cannot be used as the feedback for a limiter
+A current derate was built as feedback on `|ud|`, scaling the command by
+`ud_lim/|ud|`. It could not work: `piStep` already clamps its output to
+`+-vbus`, so `|ud|` never *exceeds* the bus and the ratio could never drop below
+`UD_FRAC` — structurally incapable of derating more than 15% no matter how far
+over budget the drive really was. Symptom: at 0.8 A it delivered 0.68 A where
+~0.29 A was needed, and the ceiling barely moved. Before closing a loop around a
+measurement, check whether anything upstream saturates it.
+
+### Clamping after the regulator winds up integrators it cannot see
+The `|u| <= vbus` backstop scales `ud`/`uq` *after* `piStep`, whose anti-windup
+only knows its own per-axis limit. With `ud = -12.10` inside `+-12.16` the PI
+believed it was unsaturated and kept integrating against a ceiling it had no way
+to observe, while the applied voltage sat pinned at `|u| = vbus` continuously.
+Any post-hoc actuator clamp has to be reported back to the regulator.
+
+### Feedforward decoupling must use the command, not the measurement
+See the FOC section: measured-current decoupling closes a loop whose gain
+approaches exactly 1 at speed, and it dropped the measured ceiling from 690 RPM
+to 550 RPM. This is a real trap because the textbook equations are written in
+terms of Id/Iq and it is natural to reach for the measured values.
+
+### Trust the datasheet for nothing you can measure
+Phase resistance was 16% off (3.5 vs 4.04 ohm) and inductance was wrong by more
+than 2x, in a direction that halved the current-loop bandwidth and doubled the
+inductive voltage the loop fights at speed. The datasheet also never mentioned
+that the machine is 2.2:1 salient, so a single inductance constant was wrong for
+one axis no matter what value it held. Correcting these two numbers and
+splitting the gains per axis took the ceiling from ~400 RPM to 560 RPM with no
+hardware change; the rest of the path to 1700 RPM followed from measuring what
+those parameters do under load.
+
+### `Serial` is USB CDC on this core and blocks on 1 ms USB frames
+The `115200` passed to `Serial.begin` is ignored. Writes block on USB frame
+scheduling, so a telemetry print costs ~500-1000 us in bursts. When the caller
+also owns the commanded angle, that stall lands directly in the motor as a
+periodic angle jump — audible as regular clicking at the print rate (40 Hz for a
+25 ms interval). Instrumentation that measures worst-case loop time will mostly
+be measuring its own printing. Keeping the angle inside the ISR makes the
+control path immune to it.
+
+### Both ISENSE_SCALE values negative is a 180 degree frame rotation
+`ISENSE_SCALE_A` and `ISENSE_SCALE_B` are both `-1`, which negates the whole
+alpha-beta vector. That is a rotation, not a reflection, so it is harmless for
+running the motor — torque is unaffected and the rotor simply sits 180
+electrical degrees from where the model labels it — but it inverts the sign of
+the back-EMF term and is why every `lambda_m` extraction returns negative. A
+single flipped channel would be a reflection instead, which turns the dq
+quantities into a 2*we signal the PI cannot track; the fact that `|i|` tracks its
+command is what rules that out.

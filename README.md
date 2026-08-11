@@ -183,8 +183,8 @@ SPI1 (GPIO 10–13) and I2C0 (GPIO 16–17) are routed to headers and are usable
 |---|---|
 | Step angle | 1.8° (200 steps/rev) |
 | Pole pairs | 50 |
-| Phase resistance | 4.074 Ω (measured; datasheet says 3.5) |
-| Phase inductance | Ld 3.82 mH, Lq 8.43 mH (measured; datasheet says 3.5) |
+| Phase resistance | 4.042 Ω (measured, mean of 2 motors; datasheet says 3.5) |
+| Phase inductance | Ld 3.79 mH, Lq 8.28 mH (measured, mean of 2; datasheet says 3.5) |
 | Rated current | 1.0 A |
 
 ---
@@ -194,9 +194,9 @@ SPI1 (GPIO 10–13) and I2C0 (GPIO 16–17) are routed to headers and are usable
 Pole-placement design: current loop bandwidth = 1000 rad/s.
 
 ```
-kP_d = BANDWIDTH * Ld = 1000 * 0.0038231 = 3.82
-kP_q = BANDWIDTH * Lq = 1000 * 0.0084265 = 8.43
-kI   = BANDWIDTH * R  = 1000 * 4.074    = 4074   (shared)
+kP_d = BANDWIDTH * Ld = 1000 * 0.0037946 = 3.79
+kP_q = BANDWIDTH * Lq = 1000 * 0.0082764 = 8.28
+kI   = BANDWIDTH * R  = 1000 * 4.0417   = 4042   (shared)
 ```
 
 Bus voltage is read live from the ADS1015 (`busVoltage()`, ~1kHz) and used behind the inverse-Park

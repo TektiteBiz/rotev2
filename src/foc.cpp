@@ -9,12 +9,13 @@
 #include "hardware/irq.h"
 #include "hardware/sync.h"
 #include "pico/multicore.h"
+#include "pico/time.h"
 
 namespace rotev {
 
-struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; float vel; uint32_t seq; bool enabled; bool openloop; bool ab_mode; bool velmode; bool profmode; };
+struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; float vel; float acc; uint32_t t_us; bool enabled; bool openloop; bool ab_mode; bool velmode; bool profmode; };
 
-static volatile Setpoint s_sp[2]   = {{0,0,0,0,0,false,false,false,false,false},{0,0,0,0,0,false,false,false,false,false}};
+static volatile Setpoint s_sp[2]   = {{0,0,0,0,0,0,false,false,false,false,false},{0,0,0,0,0,0,false,false,false,false,false}};
 static volatile AB       s_tel[2]  = {{0,0},{0,0}};
 // Applied dq voltage and measured dq current, for bringup telemetry. Written
 // post-clamp so it reflects what actually reached inversePark().
@@ -27,8 +28,8 @@ static float    s_prev_te[2] = {0.0f, 0.0f};
 static bool     s_we_primed[2] = {false, false};
 static float    s_lq[2] = {PHASE_LQ, PHASE_LQ};  // online Lq, tracks saturation
 static uint32_t s_hold[2] = {0, 0};              // ticks since theta_e moved
-static uint32_t s_seq[2] = {0, 0};               // last profile seq seen
-static uint32_t s_age[2] = {0, 0};               // ticks since that seq arrived
+static float    s_prof_th[2] = {0.0f, 0.0f};     // ISR's own profile integral
+static bool     s_prof_primed[2] = {false, false};
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
 // Pre-computed duties applied at the very start of the next ISR invocation,
@@ -62,25 +63,76 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   // one mechanical revolution is exact because POLE_PAIRS is an integer, and
   // it keeps theta small enough that float resolution stays far below the
   // per-tick increment.
+  // Read BEFORE advancing, so theta_mech means "the angle right now" in every
+  // mode. It used to advance first and then be used, which silently gave
+  // velocity mode one whole control tick of extra phase lead that profile
+  // mode (taking the angle from the caller, which means "now") did not have.
+  // That is 15 electrical degrees at 600 RPM and 42 at 1700 -- enough that
+  // phase 4 went noisy and lost its top end when it switched to profile mode,
+  // while phase 3 had been quietly relying on the extra lead all along. All
+  // phase advance now lives in COMP_TICKS, in one place, applied to both.
+  sp.theta_mech = s_sp[m].theta_mech;
+  sp.vel        = s_sp[m].vel;
   if (s_sp[m].velmode && s_sp[m].enabled) {
     float th = s_sp[m].theta_mech + s_sp[m].vel * CTRL_DT;
     if (th >= TWO_PI_F) th -= TWO_PI_F;
     else if (th < 0.0f) th += TWO_PI_F;
-    s_sp[m].theta_mech = th;
+    s_sp[m].theta_mech = th;  // for the NEXT tick
   }
-  sp.theta_mech = s_sp[m].theta_mech;
 
-  // Profile mode: position is authoritative, velocity only fills the gap
-  // since it arrived. Integrating velocity alone (velmode) is fine for "spin
-  // at N RPM", but for a position profile the caller's integral and the
-  // ISR's would be two independent sums of the same velocity and would drift
-  // apart with nothing to correct them. Here every new setpoint resets the
-  // angle outright, so error cannot accumulate; the feedforward only smooths
-  // over core0 being late, and is capped so a wedged core0 cannot run away.
+  // Profile mode: position is authoritative, velocity interpolates it to NOW.
+  // Integrating velocity alone (velmode) is fine for "spin at N RPM", but for
+  // a position profile the caller's integral and the ISR's would be two
+  // independent sums of the same velocity, drifting apart with nothing to
+  // correct them. Here every setpoint resets the angle outright, so error
+  // cannot accumulate.
+  //
+  // The age is measured in real microseconds, not in control ticks. Counting
+  // ticks since the sequence number last changed does not work: the caller
+  // typically updates several times per tick, so the age is always 0, the
+  // feedforward never engages, and the commanded angle ends up quantized to
+  // the caller's update grid and sampled at a random phase by this ISR. That
+  // jitter is pure phase noise on the field -- velocity mode has none of it,
+  // because its angle is generated on the hardware tick itself. Interpolating
+  // against the timer removes the caller's rate from the picture entirely.
   if (s_sp[m].profmode && s_sp[m].enabled) {
-    if (s_sp[m].seq != s_seq[m]) { s_seq[m] = s_sp[m].seq; s_age[m] = 0; }
-    else if (s_age[m] < PROF_AGE_MAX) ++s_age[m];
-    sp.theta_mech += s_sp[m].vel * ((float)s_age[m] * CTRL_DT);
+    uint32_t age_us = time_us_32() - s_sp[m].t_us;
+    if (age_us > PROF_AGE_MAX_US) age_us = PROF_AGE_MAX_US;
+    float t = (float)age_us * 1e-6f;
+    // Where the caller says the axis should be right now. Second order,
+    // because first order errs in the direction that hurts: extrapolating on
+    // a stale velocity while DECELERATING predicts ahead of the truth, so the
+    // commanded angle snaps BACKWARD when the caller catches up, momentarily
+    // reversing torque. The error is 0.5*|acc|*t^2, growing with the square
+    // of the caller's stall.
+    float a = PROF_ACC_FF * s_sp[m].acc;
+    float v = s_sp[m].vel + a * t;
+    float target = sp.theta_mech + (s_sp[m].vel + 0.5f * a * t) * t;
+
+    // Do NOT use that target directly. It is reconstructed from a timestamp
+    // with 1 us resolution, which at 1000 RPM is 0.3 electrical degrees of
+    // random jitter on every control tick -- broadband phase noise on the
+    // field, and audibly rougher than velocity mode even at constant speed.
+    // Instead integrate the velocity on this tick exactly as velocity mode
+    // does (jitter-free by construction) and pull that integral toward the
+    // target slowly. The caller stays authoritative so nothing can drift,
+    // while PROF_TRACK low-passes the timing noise out of the angle.
+    float th;
+    if (!s_prof_primed[m]) {
+      th = target;
+      s_prof_primed[m] = true;
+    } else {
+      th = s_prof_th[m] + v * CTRL_DT;
+      float e = target - th;
+      if (e > PI_F) e -= TWO_PI_F;
+      else if (e < -PI_F) e += TWO_PI_F;
+      th += PROF_TRACK * e;
+    }
+    if (th >= TWO_PI_F) th -= TWO_PI_F;
+    else if (th < 0.0f) th += TWO_PI_F;
+    s_prof_th[m] = th;
+    sp.theta_mech = th;
+    sp.vel = v;  // so `we` tracks it too
   }
   sp.iq_cmd     = s_sp[m].iq_cmd;
   sp.enabled    = s_sp[m].enabled;
@@ -94,13 +146,12 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   sp.vb_duty    = s_sp[m].vb_duty;
   sp.velmode    = s_sp[m].velmode;
   sp.profmode   = s_sp[m].profmode;
-  sp.vel        = s_sp[m].vel;
   spin_unlock(s_lock, irq);
 
   if (!sp.enabled) {
     piReset(s_pid[m]); piReset(s_piq[m]); s_derate[m] = 1.0f;
     s_we[m] = 0.0f; s_we_primed[m] = false; s_lq[m] = PHASE_LQ; s_hold[m] = 0;
-    s_age[m] = 0;
+    s_prof_primed[m] = false;
     s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
     return;
   }
@@ -313,18 +364,19 @@ void focSetVelocity(Motor m, float vel_rad_s, float iq_cmd, bool enabled) {
 // Profile mode: absolute position plus a velocity feedforward. theta_mech is
 // applied exactly as given on every update, so the caller's profile -- not an
 // ISR-side integral -- decides where the axis ends up.
-void focSetProfile(Motor m, float theta_mech, float vel_rad_s, float iq_cmd,
-                   bool enabled) {
+void focSetProfile(Motor m, float theta_mech, float vel_rad_s, float acc_rad_s2,
+                   float iq_cmd, bool enabled) {
   uint32_t irq = spin_lock_blocking(s_lock);
   s_sp[m].theta_mech = theta_mech;
   s_sp[m].vel = vel_rad_s;
+  s_sp[m].acc = acc_rad_s2;
   s_sp[m].iq_cmd = clampCurrent(iq_cmd);
   s_sp[m].enabled = enabled;
   s_sp[m].openloop = false;
   s_sp[m].ab_mode = false;
   s_sp[m].velmode = false;
   s_sp[m].profmode = true;
-  ++s_sp[m].seq;
+  s_sp[m].t_us = time_us_32();
   spin_unlock(s_lock, irq);
 }
 

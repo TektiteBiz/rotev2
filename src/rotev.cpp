@@ -46,10 +46,11 @@ void motorWriteVelocity(float vel_rad_s, float amps, Motor m) {
   focSetVelocity(m, vel_rad_s, amps, s_en[m]);
 }
 
-void motorWriteProfile(float theta_rad, float vel_rad_s, float amps, Motor m) {
+void motorWriteProfile(float theta_rad, float vel_rad_s, float acc_rad_s2,
+                       float amps, Motor m) {
   s_theta[m] = theta_rad;
   s_iq[m] = amps;
-  focSetProfile(m, theta_rad, vel_rad_s, amps, s_en[m]);
+  focSetProfile(m, theta_rad, vel_rad_s, acc_rad_s2, amps, s_en[m]);
 }
 
 void motorWriteVoltage(float theta_rad, float uq_volts, Motor m) {

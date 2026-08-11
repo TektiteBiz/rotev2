@@ -8,13 +8,11 @@ using namespace rotev;
 // controlStep() has no position sensor -- it takes the COMMANDED theta as a
 // stand-in for the true rotor position and uses it to park-transform the
 // measured current for feedback. At power-up the real rotor angle is
-// arbitrary (nothing has ever aligned it), so that assumption is false from
-// sample 0 unless we force it to be true first: hold a fixed theta with a
-// modest current for ALIGN_TIME_S so the rotor physically settles into that
-// position before the closed loop starts depending on the assumption.
-// (Phase 2 doesn't need this -- open-loop voltage control never looks at
-// measured current to decide its output, so it can't be fed a bad feedback
-// projection the way the closed loop can.)
+// arbitrary, so that assumption starts out false. The velocity ramp from zero
+// is what fixes it: for the first moments the commanded field is barely
+// moving while already carrying full current, which is exactly an alignment
+// hold, and the rotor is captured long before the speed is high enough to
+// outrun it. A separate explicit align stage was redundant with that.
 //
 // Both axes run the same align -> ramp -> cruise sequence off one clock. The
 // 24 kHz ISR alternates motors and so services each at 12 kHz; motor 2 was
@@ -25,20 +23,11 @@ using namespace rotev;
 // axis's `on` field false to leave it idle.
 static constexpr float RPM = 1700.0f;
 static constexpr float TARGET_AMPS = 0.8f;
-static constexpr float ALIGN_TIME_S = 0.5f;
-// Set true to stay in the alignment hold forever. With the rotor stationary
-// there is no back-EMF and no di/dt, so the applied q-axis voltage is pure
-// Ohm's law: uq = I_actual * (R_phase + R_ds(on) + R_shunt) + V_offset, which
-// measured 4.074*I + 0.07 on this board. The PI drives *measured* current to
-// TARGET_AMPS, so comparing uq against that prediction checks the
-// current-sense gain through the voltage side, independently of the sense
-// chain itself. Off by 2x in the sense gain shows up as uq off by 2x.
-static constexpr bool HOLD_ALIGN = false;
 static constexpr float RAMP_TIME_S = 2.0f;
 
 struct Axis {
   Motor m;
-  bool  on;
+  bool on;
 };
 static Axis ax[] = {
     {MOTOR_1, true},
@@ -81,39 +70,26 @@ void loop() {
 
   loop_count++;
   if (dt_us > max_dt_us) max_dt_us = dt_us;
-  // Stop accumulating once the ramp is over. `elapsed` is only read to
-  // sequence align->ramp->cruise, and letting a float grow without bound
-  // while adding microsecond increments to it eventually loses the
-  // increment entirely to rounding.
-  if (elapsed > ALIGN_TIME_S + RAMP_TIME_S)
-    elapsed = ALIGN_TIME_S + RAMP_TIME_S;
+  // Stop accumulating once the ramp is over. `elapsed` only sequences the
+  // ramp, and letting a float grow without bound while adding microsecond
+  // increments to it eventually loses the increment entirely to rounding.
+  if (elapsed > RAMP_TIME_S) elapsed = RAMP_TIME_S;
 
   float vbus = busVoltage();
   if (vbus < vbus_min) vbus_min = vbus;
   if (vbus > vbus_max) vbus_max = vbus;
 
-  float rpm_now = 0.0f;
-  bool aligning = HOLD_ALIGN || elapsed < ALIGN_TIME_S;
-  if (!aligning) {
-    float ramp_elapsed = elapsed - ALIGN_TIME_S;
-    rpm_now =
-        (ramp_elapsed < RAMP_TIME_S) ? RPM * (ramp_elapsed / RAMP_TIME_S) : RPM;
-  }
+  float rpm_now = RPM * (elapsed / RAMP_TIME_S);
   for (int i = 0; i < N_AX; ++i) {
     if (!ax[i].on) continue;
-    if (aligning) {
-      motorWrite(0.0f, TARGET_AMPS, ax[i].m);  // hold at theta=0 to align
-    } else {
-      // Command a velocity, not an angle. The control ISR integrates it on
-      // its own 83.3 us tick, so a core0 stall (the USB CDC print below is
-      // ~500 us) cannot inject an angle step into the commanded field. Only
-      // the slowly-varying ramp rate comes from here, where jitter is
-      // harmless. There is no position target in this phase, so a pure
-      // velocity command is correct -- phase 4 needs motorWriteProfile
-      // instead, because there an ISR-side integral would drift against the
-      // profile's own.
-      motorWriteVelocity(2.0f * PI * (rpm_now / 60.0f), TARGET_AMPS, ax[i].m);
-    }
+    // Command a velocity, not an angle. The control ISR integrates it on its
+    // own 83.3 us tick, so a core0 stall (the USB CDC print below is ~500 us)
+    // cannot inject an angle step into the commanded field. Only the
+    // slowly-varying ramp rate comes from here, where jitter is harmless.
+    // There is no position target in this phase, so a pure velocity command
+    // is correct -- phase 4 needs motorWriteProfile instead, because there an
+    // ISR-side integral would drift against the profile's own.
+    motorWriteVelocity(2.0f * PI * (rpm_now / 60.0f), TARGET_AMPS, ax[i].m);
   }
 
   uint32_t print_dt_us = now - last_print_us;
@@ -140,19 +116,33 @@ void loop() {
     for (int i = 0; i < N_AX; ++i) {
       if (!ax[i].on) continue;
       int n = i + 1;
-      Serial.print(",sensA"); Serial.print(n); Serial.print(':');
+      Serial.print(",sensA");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorCurrentA(ax[i].m));
-      Serial.print(",sensB"); Serial.print(n); Serial.print(':');
+      Serial.print(",sensB");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorCurrentB(ax[i].m));
-      Serial.print(",ud"); Serial.print(n); Serial.print(':');
+      Serial.print(",ud");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorVoltageD(ax[i].m), 3);
-      Serial.print(",uq"); Serial.print(n); Serial.print(':');
+      Serial.print(",uq");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorVoltageQ(ax[i].m), 3);
-      Serial.print(",id"); Serial.print(n); Serial.print(':');
+      Serial.print(",id");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorCurrentD(ax[i].m), 3);
-      Serial.print(",iq"); Serial.print(n); Serial.print(':');
+      Serial.print(",iq");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorCurrentQ(ax[i].m), 3);
-      Serial.print(",derate"); Serial.print(n); Serial.print(':');
+      Serial.print(",derate");
+      Serial.print(n);
+      Serial.print(':');
       Serial.print(motorDerate(ax[i].m), 3);
     }
     Serial.println();

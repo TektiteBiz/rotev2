@@ -12,17 +12,29 @@ constexpr int POLE_PAIRS = 50;      // 1.8 deg/step -> 200 steps/rev
 // The datasheet's 3.5 ohm / 3.5 mH were both wrong, and this motor turns out
 // to be strongly salient -- Lq is 2.2x Ld -- so a single inductance cannot
 // describe both axes.
+// Values are the mean of two motors, since constants.h is global and both
+// axes run off it. They agreed closely -- R within 1.6%, Ld 1.5%, Lq 3.6%,
+// saliency 2.20 vs 2.16 -- so averaging halves the worst-case error to under
+// 2%. For scale, Lq itself moves ~25% with current on a SINGLE motor from
+// saturation, so unit-to-unit spread is the smaller effect by far.
+//     motor 1: R 4.0744  Ld 3.8231 mH  Lq 8.4265 mH
+//     motor 2: R 4.0089  Ld 3.7660 mH  Lq 8.1263 mH
 //   R  : 6-point V/I sweep regressed as I vs V, so the slope excludes the
 //        driver's dead-time drop and any sense offset (both land in the
-//        intercept). Cross-checked three ways: sweep 4.074, Ld step response
-//        4.091, alignment hold 4.26 minus the 0.07 V driver offset.
+//        intercept). Cross-checked three ways on motor 1: sweep 4.074, Ld
+//        step response 4.091, alignment hold 4.26 minus the 0.07 V offset.
 //   Ld : step response with the rotor parked on phase B, which makes B the
 //        d-axis so the step produces no torque and the rotor cannot move.
-//        R^2 0.9987, and repeatable across runs to 0.01%.
+//        R^2 0.998+, and repeatable across runs on one motor to 0.01%.
 //   Lq : slope of ud vs (we*iq) over a 100-300 RPM sweep on the running
 //        machine. Standstill cannot measure Lq -- any q-axis current makes
-//        torque and the rotor moves. R^2 0.9998, good to roughly +-5% (the
+//        torque and the rotor moves. R^2 0.9999, good to roughly +-5% (the
 //        load angle leaks a little back-EMF into ud).
+//        NOTE the runtime does not lean on this number: the derate uses a
+//        per-motor ONLINE Lq estimate (s_lq in foc.cpp) that tracks each
+//        motor's actual operating point and saturation. PHASE_LQ only seeds
+//        it and sets KP_Q and the decoupling feedforward, all of which
+//        tolerate a few percent easily.
 // Ld < Lq is expected here: the magnet sits in the d-axis flux path with
 // mu_r ~ 1, so the d-axis is the high-reluctance one.
 //
@@ -38,9 +50,9 @@ constexpr int POLE_PAIRS = 50;      // 1.8 deg/step -> 200 steps/rev
 // expected to fall at higher current -- which would make the high-current
 // ceiling better than the relation above predicts and leave KP_Q over-gained
 // there. Not yet measured; sweep LQ_AMPS in bringup phase 5 to find out.
-constexpr float PHASE_R  = 4.074f;    // ohms, measured (datasheet says 3.5)
-constexpr float PHASE_LD = 0.0038231f;  // H, measured (datasheet says 3.5 mH)
-constexpr float PHASE_LQ = 0.0084265f;  // H, measured -- sets ud at speed
+constexpr float PHASE_R  = 4.0417f;     // ohms, mean of 2 (datasheet: 3.5)
+constexpr float PHASE_LD = 0.0037946f;  // H, mean of 2 (datasheet: 3.5 mH)
+constexpr float PHASE_LQ = 0.0082764f;  // H, mean of 2 -- sets ud at speed
 
 // --- Control (PI pole placement, per axis) ---
 // Each axis places its controller zero on its own plant pole: the d-axis
@@ -48,9 +60,9 @@ constexpr float PHASE_LQ = 0.0084265f;  // H, measured -- sets ud at speed
 // KI/KP_D = R/Ld, which falls out of KP_D = BW*Ld with a SHARED KI = BW*R.
 // The same holds for q. So KP differs per axis and KI does not.
 constexpr float BANDWIDTH = 1000.0f;         // rad/s, both axes
-constexpr float KP_D = BANDWIDTH * PHASE_LD; // 3.82
-constexpr float KP_Q = BANDWIDTH * PHASE_LQ; // 8.43
-constexpr float KI   = BANDWIDTH * PHASE_R;  // 4074
+constexpr float KP_D = BANDWIDTH * PHASE_LD; // 3.79
+constexpr float KP_Q = BANDWIDTH * PHASE_LQ; // 8.28
+constexpr float KI   = BANDWIDTH * PHASE_R;  // 4042
 
 // --- Voltage-limited torque derate ---
 // ud = -we*Lq*iq grows with BOTH speed and current, and on a 12 V bus it is
@@ -67,12 +79,20 @@ constexpr float IQ_MIN = 0.05f;     // floor on the derated current command
 // --- Control delay compensation ---
 // Current is sampled at the top of the ISR, the duty computed from it is
 // applied at the NEXT ISR for this motor (+1 tick) and then held for a whole
-// tick, so the voltage lands ~1.5 ticks after the measurement. At 700 RPM
-// that is 125 us = 26 electrical degrees of stale angle, which rotates the
-// applied vector backwards and visibly distorts the phase currents. The
-// inverse Park therefore runs at theta_e + we*COMP_TICKS*dt while the
-// forward Park stays at the angle the sample was actually taken at.
-constexpr float COMP_TICKS = 1.5f;
+// tick, so the voltage lands ~1.5 ticks after the measurement -- 26 electrical
+// degrees at 700 RPM, which rotates the applied vector backwards and visibly
+// distorts the phase currents. The inverse Park therefore runs at
+// theta_e + we*COMP_TICKS*dt while the forward Park stays at the angle the
+// sample was actually taken at.
+//
+// 2.5, not the 1.5 the pipeline alone suggests: velocity mode used to advance
+// its angle before using it, handing itself an undocumented extra tick of
+// lead, and every result up to 1700 RPM was obtained with that in place. The
+// pre-increment is gone (foc.cpp reads before advancing, so both command
+// modes now mean "angle now"), so that tick is carried here instead, where it
+// applies to position and profile commands too. Retune from here if the
+// control rate changes.
+constexpr float COMP_TICKS = 2.5f;
 
 // Cross-coupling decoupling strength. 1.0 = full, 0.0 = off (set 0 to A/B
 // test it -- it is not yet established that it helps this machine).
@@ -80,7 +100,18 @@ constexpr float DECOUPLE_FRAC = 1.0f;
 constexpr float WE_ALPHA = 0.02f;   // speed-estimator LPF, position mode only
 constexpr float LQ_ALPHA = 0.001f;  // online Lq estimator LPF (~80 ms)
 constexpr float WE_TIMEOUT_S = 0.05f;  // no angle change for this long -> stopped
-constexpr uint32_t PROF_AGE_MAX = 600; // cap velocity extrapolation (~50 ms)
+constexpr uint32_t PROF_AGE_MAX_US = 50000;  // cap velocity extrapolation
+// Acceleration feedforward in the profile extrapolation. Set 0 to fall back
+// to first order. At normal caller rates the whole extrapolation is a
+// sub-degree effect, so if changing this alters behaviour noticeably, the
+// caller is stalling for milliseconds and THAT is the thing to fix.
+constexpr float PROF_ACC_FF = 1.0f;
+// Profile tracking gain, per control tick. The ISR integrates the commanded
+// velocity on its own tick (jitter-free, exactly as velocity mode does) and
+// pulls that integral toward the caller's authoritative angle at this rate.
+// Small enough to filter the caller's timing quantization, fast enough that
+// real position error is gone in ~50 ms: tau = CTRL_DT / PROF_TRACK.
+constexpr float PROF_TRACK = 0.005f;
 
 // --- Current sense (INA181A2, 30 mohm, REF 1.65V, 3.3V ADC) ---
 constexpr float SHUNT_OHMS = 0.03f;
