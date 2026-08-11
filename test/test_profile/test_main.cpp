@@ -16,23 +16,23 @@ void test_default_profile_is_empty() {
 }
 
 void test_trapezoidal_branch_reaches_max_vel() {
-  // ramps need V*ta = 10 * pi*10/(2*5) = 31.4 rad, far less than 1000.
+  // ramps need V*ta = 10 * (10/5) = 20 rad, far less than 1000.
   Profile p = Profile::fromVelAccel(1000.0f, 10.0f, 5.0f);
   TEST_ASSERT_TRUE(p.valid());
   TEST_ASSERT_FLOAT_WITHIN(1e-4, 10.0f, p.maxVelocity());
   TEST_ASSERT_FLOAT_WITHIN(1e-3, 5.0f, p.maxAccel());
-  TEST_ASSERT_FLOAT_WITHIN(1e-4, PI_F * 10.0f / 10.0f, p.accelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 10.0f / 5.0f, p.accelTime());
   TEST_ASSERT_TRUE(p.cruiseTime() > 0.0f);
   TEST_ASSERT_FLOAT_WITHIN(1e-2, 1000.0f, p.distance());
 }
 
 void test_triangular_branch_never_reaches_max_vel() {
-  // 1 rad at 100 rad/s would need 1570 rad of ramp: peak velocity is capped.
+  // 1 rad at 100 rad/s would need 1000 rad of ramp: peak velocity is capped.
   Profile p = Profile::fromVelAccel(1.0f, 100.0f, 10.0f);
   TEST_ASSERT_TRUE(p.valid());
   TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, p.cruiseTime());
   TEST_ASSERT_TRUE(p.maxVelocity() < 100.0f);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4, std::sqrt(2.0f * 10.0f * 1.0f / PI_F), p.maxVelocity());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, std::sqrt(10.0f * 1.0f), p.maxVelocity());
   TEST_ASSERT_FLOAT_WITHIN(1e-3, 10.0f, p.maxAccel());
   TEST_ASSERT_FLOAT_WITHIN(1e-4, 1.0f, p.distance());
 }
@@ -42,11 +42,11 @@ void test_accessors_are_self_consistent() {
   TEST_ASSERT_FLOAT_WITHIN(1e-5, p.accelTime(), p.decelTime());
   TEST_ASSERT_FLOAT_WITHIN(1e-4, 2.0f * p.accelTime() + p.cruiseTime(), p.duration());
   TEST_ASSERT_FLOAT_WITHIN(1e-2, p.maxVelocity() * (p.accelTime() + p.cruiseTime()), p.distance());
-  TEST_ASSERT_FLOAT_WITHIN(1e-4, PI_F * p.maxVelocity() / (2.0f * p.accelTime()), p.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, p.maxVelocity() / p.accelTime(), p.maxAccel());
 }
 
 void test_from_time_accel_reproduces_requested_duration() {
-  // minimum time at A=10 for D=100 is sqrt(2*pi*D/A) = 7.927 s, so 12 s is reachable.
+  // minimum time at A=10 for D=100 is 2*sqrt(D/A) = 6.325 s, so 12 s is reachable.
   Profile p = Profile::fromTimeAccel(100.0f, 12.0f, 10.0f);
   TEST_ASSERT_TRUE(p.valid());
   TEST_ASSERT_FLOAT_WITHIN(1e-3, 12.0f, p.duration());
@@ -60,14 +60,14 @@ void test_from_time_accel_falls_back_when_time_unreachable() {
   TEST_ASSERT_TRUE(p.valid());
   TEST_ASSERT_TRUE(p.duration() > 1.0f);
   // The fallback is the time-optimal triangular move at max_accel.
-  TEST_ASSERT_FLOAT_WITHIN(1e-3, std::sqrt(2.0f * PI_F * 100.0f / 10.0f), p.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 2.0f * std::sqrt(100.0f / 10.0f), p.duration());
   TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, p.cruiseTime());
   TEST_ASSERT_FLOAT_WITHIN(1e-2, 100.0f, p.distance());
   TEST_ASSERT_FLOAT_WITHIN(1e-2, 10.0f, p.maxAccel());
 }
 
 void test_from_time_accel_at_exactly_minimum_time() {
-  float tmin = std::sqrt(2.0f * PI_F * 100.0f / 10.0f);
+  float tmin = 2.0f * std::sqrt(100.0f / 10.0f);  // triangular, disc == 0
   Profile p = Profile::fromTimeAccel(100.0f, tmin, 10.0f);
   TEST_ASSERT_TRUE(p.valid());
   TEST_ASSERT_FLOAT_WITHIN(1e-2, tmin, p.duration());
@@ -119,7 +119,7 @@ void test_at_start_is_at_rest() {
   TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, s.t);
   TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.0f, s.pos);
   TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.0f, s.vel);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, s.acc);  // raised cosine starts jerk-free
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, p.maxAccel(), s.acc);  // full accel from t=0
   TEST_ASSERT_FALSE(s.done);
 }
 

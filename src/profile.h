@@ -11,12 +11,14 @@ struct ProfileState {
   bool  done; // t >= duration()
 };
 
-// Jerk-free S-curve move: the velocity ramps up as a raised cosine, cruises,
-// then ramps down the same way, so acceleration starts and ends at zero.
-//   accel phase (0 <= t < ta):   v = vpk/2 * (1 - cos(pi*t/ta))
-//   cruise      (ta <= t < ta+tc): v = vpk
-//   decel phase (mirror of accel)
-// Peak acceleration is pi*vpk/(2*ta), reached at the middle of each ramp.
+// Trapezoidal velocity move: constant acceleration up to the cruise speed,
+// constant speed, then constant deceleration back to rest. Position is the
+// integral of that, so it traces the S shape.
+//   accel  (0 <= t < ta):      v = a*t,  a = vpk/ta
+//   cruise (ta <= t < ta+tc):  v = vpk
+//   decel  (last ta seconds):  v ramps back to 0 at -a
+// A move that cannot reach vpk before it has to start stopping degenerates to
+// a triangle (tc == 0) at the same acceleration.
 class Profile {
  public:
   Profile();  // empty: zero distance, zero duration, valid() == false

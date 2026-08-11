@@ -20,17 +20,17 @@ Profile Profile::fromVelAccel(float distance, float max_vel, float max_accel) {
   const float D = std::fabs(distance), V = std::fabs(max_vel), A = std::fabs(max_accel);
   if (!finitePos(D) || !finitePos(V) || !finitePos(A)) return p;
 
-  const float ta = PI_F * V / (2.0f * A);
+  const float ta = V / A;
   if (V * ta <= D) {
     // Trapezoidal: the two ramps together cover V*ta, the rest is cruise at V.
     p.vpk_ = s * V;
     p.ta_  = ta;
     p.tc_  = D / V - ta;
   } else {
-    // Triangular: V is never reached, so solve vpk*ta == D for the peak instead.
-    const float vpk = std::sqrt(2.0f * A * D / PI_F);
+    // Triangular: V is never reached, so solve vpk*ta == D with ta = vpk/A.
+    const float vpk = std::sqrt(A * D);
     p.vpk_ = s * vpk;
-    p.ta_  = PI_F * vpk / (2.0f * A);
+    p.ta_  = vpk / A;
     p.tc_  = 0.0f;
   }
   if (!std::isfinite(p.vpk_) || !finitePos(p.ta_) || !std::isfinite(p.tc_)) return Profile();
@@ -42,15 +42,15 @@ Profile Profile::fromTimeAccel(float distance, float time, float max_accel) {
   const float D = std::fabs(distance), A = std::fabs(max_accel), T = time;
   if (!finitePos(D) || !finitePos(T) || !finitePos(A)) return Profile();
 
-  // Duration as a function of peak velocity v is T(v) = pi*v/(2A) + D/v, so v
-  // solves pi/(2A) v^2 - T v + D = 0. The smaller root is the slow branch that
-  // still cruises; the larger one would exceed max_accel.
-  float disc = T * T - 2.0f * PI_F * D / A;
+  // Duration as a function of peak velocity v is T(v) = v/A + D/v, so v solves
+  // v^2/A - T v + D = 0. The smaller root is the slow branch that still
+  // cruises; the larger one would exceed max_accel.
+  float disc = T * T - 4.0f * D / A;
   if (!(disc >= 0.0f)) {
     // T is below the time-optimal move at this accel: give the fastest one.
-    return fromVelAccel(distance, std::sqrt(2.0f * A * D / PI_F), A);
+    return fromVelAccel(distance, std::sqrt(A * D), A);
   }
-  const float v = A * (T - std::sqrt(disc)) / PI_F;
+  const float v = A * (T - std::sqrt(disc)) * 0.5f;
   if (!finitePos(v)) return Profile();
   return fromVelAccel(distance, v, A);
 }
@@ -76,7 +76,7 @@ Profile Profile::scaleTime(float k) const {
 float Profile::distance()    const { return vpk_ * (ta_ + tc_); }
 float Profile::duration()    const { return 2.0f * ta_ + tc_; }
 float Profile::maxVelocity() const { return vpk_; }
-float Profile::maxAccel()    const { return (ta_ > 0.0f) ? PI_F * vpk_ / (2.0f * ta_) : 0.0f; }
+float Profile::maxAccel()    const { return (ta_ > 0.0f) ? vpk_ / ta_ : 0.0f; }
 float Profile::accelTime()   const { return ta_; }
 float Profile::cruiseTime()  const { return tc_; }
 float Profile::decelTime()   const { return ta_; }
@@ -91,27 +91,28 @@ ProfileState Profile::at(float t) const {
   if (t > T) t = T;
   st.t = t;
 
-  const float w = PI_F / ta_;
+  const float a = vpk_ / ta_;          // signed ramp acceleration
+  const float x_ramp = 0.5f * vpk_ * ta_;  // distance covered by one ramp
   if (t >= T) {
     st.pos  = distance();
     st.vel  = 0.0f;
     st.acc  = 0.0f;
     st.done = true;
   } else if (t < ta_) {
-    st.vel  = vpk_ * 0.5f * (1.0f - std::cos(w * t));
-    st.pos  = vpk_ * 0.5f * (t - std::sin(w * t) / w);
-    st.acc  = vpk_ * w * 0.5f * std::sin(w * t);
+    st.vel  = a * t;
+    st.pos  = 0.5f * a * t * t;
+    st.acc  = a;
     st.done = false;
   } else if (t < ta_ + tc_) {
-    st.pos  = vpk_ * ta_ * 0.5f + vpk_ * (t - ta_);
+    st.pos  = x_ramp + vpk_ * (t - ta_);
     st.vel  = vpk_;
     st.acc  = 0.0f;
     st.done = false;
   } else {
     float u = t - ta_ - tc_;
-    st.vel  = vpk_ * 0.5f * (1.0f + std::cos(w * u));
-    st.pos  = vpk_ * ta_ * 0.5f + vpk_ * tc_ + vpk_ * 0.5f * (u + std::sin(w * u) / w);
-    st.acc  = -vpk_ * w * 0.5f * std::sin(w * u);
+    st.vel  = vpk_ - a * u;
+    st.pos  = x_ramp + vpk_ * tc_ + vpk_ * u - 0.5f * a * u * u;
+    st.acc  = -a;
     st.done = false;
   }
   return st;
