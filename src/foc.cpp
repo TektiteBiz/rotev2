@@ -9,27 +9,36 @@
 #include "hardware/irq.h"
 #include "hardware/sync.h"
 #include "pico/multicore.h"
-#include "pico/time.h"
 
 namespace rotev {
 
-struct Setpoint { float theta_mech; float iq_cmd; float vb_duty; float vel; float acc; uint32_t t_us; bool enabled; bool openloop; bool ab_mode; bool velmode; bool profmode; };
+enum Mode : uint8_t { MODE_OFF = 0, MODE_PROFILE, MODE_VOLTAGE, MODE_AB };
 
-static volatile Setpoint s_sp[2]   = {{0,0,0,0,0,0,false,false,false,false,false},{0,0,0,0,0,0,false,false,false,false,false}};
-static volatile AB       s_tel[2]  = {{0,0},{0,0}};
+// Everything core0 hands to the control ISR, and the progress it hands back.
+// Guarded by s_lock rather than volatile: the profile evaluation below has to
+// read and write several fields as one consistent set.
+struct Setpoint {
+  Mode     mode;
+  bool     enabled;
+  float    theta_mech;   // commanded mechanical angle, [0, 2*pi)
+  float    uq;           // MODE_VOLTAGE: q-axis volts
+  float    va_duty;      // MODE_AB
+  float    vb_duty;      // MODE_AB
+  Profile  prof;         // MODE_PROFILE
+  bool     cruise;       // MODE_PROFILE: ignore prof, hold cruise_vel forever
+  float    cruise_vel;   // rad/s
+  uint32_t ticks;        // control ticks since the profile started
+  ProfileState prog;     // published progress
+};
+
+static Setpoint s_sp[2];
+static volatile AB s_tel[2]  = {{0,0},{0,0}};
 // Applied dq voltage and measured dq current, for bringup telemetry. Written
 // post-clamp so it reflects what actually reached inversePark().
-static volatile DQ       s_telu[2] = {{0,0},{0,0}};
-static volatile DQ       s_teli[2] = {{0,0},{0,0}};
-static PIState  s_pid[2], s_piq[2];
-static float    s_derate[2] = {1.0f, 1.0f};  // applied iq_cmd scaling, telemetry
-static float    s_we[2] = {0.0f, 0.0f};      // electrical speed, rad/s
-static float    s_prev_te[2] = {0.0f, 0.0f};
-static bool     s_we_primed[2] = {false, false};
-static float    s_lq[2] = {PHASE_LQ, PHASE_LQ};  // online Lq, tracks saturation
-static uint32_t s_hold[2] = {0, 0};              // ticks since theta_e moved
-static float    s_prof_th[2] = {0.0f, 0.0f};     // ISR's own profile integral
-static bool     s_prof_primed[2] = {false, false};
+static volatile DQ s_telu[2] = {{0,0},{0,0}};
+static volatile DQ s_teli[2] = {{0,0},{0,0}};
+static PIState s_pid[2], s_piq[2];
+static float   s_lq[2] = {PHASE_LQ, PHASE_LQ};  // online Lq, tracks saturation
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
 // Pre-computed duties applied at the very start of the next ISR invocation,
@@ -41,7 +50,6 @@ static float s_next_b[2] = {0, 0};
 // motors, so each motor is serviced at PWM_HZ/2.
 static constexpr float CTRL_DT = 1.0f / (PWM_HZ / 2.0f);
 static constexpr float TWO_PI_F = 6.28318530717958647692f;
-static constexpr float PI_F = 3.14159265358979323846f;
 
 // per-motor pin sets
 static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
@@ -50,178 +58,99 @@ static void phasePins(Motor m, uint32_t& phA, uint32_t& phB) {
 }
 
 // i is pre-sampled at the start of the ISR, before any pwmSetPhase call,
-// so both ADC channels land within ~8 µs of counter=TOP (well before the
-// LOW→HIGH switching edge whose timing depends on duty cycle).
+// so both ADC channels land within ~8 us of counter=TOP (well before the
+// LOW->HIGH switching edge whose timing depends on duty cycle).
 static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   float vbus = adcExtVbus();
-  Setpoint sp;
+
   uint32_t irq = spin_lock_blocking(s_lock);
-  // Velocity mode: advance the commanded angle here, on the hardware-timed
-  // control tick, instead of trusting core0 to do it. core0 stalls (USB CDC
-  // writes, blocking I2C, anything) would otherwise show up directly as
-  // angle steps in the commanded field -- i.e. as torque ripple. Wrapping at
-  // one mechanical revolution is exact because POLE_PAIRS is an integer, and
-  // it keeps theta small enough that float resolution stays far below the
-  // per-tick increment.
-  // Read BEFORE advancing, so theta_mech means "the angle right now" in every
-  // mode. It used to advance first and then be used, which silently gave
-  // velocity mode one whole control tick of extra phase lead that profile
-  // mode (taking the angle from the caller, which means "now") did not have.
-  // That is 15 electrical degrees at 600 RPM and 42 at 1700 -- enough that
-  // phase 4 went noisy and lost its top end when it switched to profile mode,
-  // while phase 3 had been quietly relying on the extra lead all along. All
-  // phase advance now lives in COMP_TICKS, in one place, applied to both.
-  sp.theta_mech = s_sp[m].theta_mech;
-  sp.vel        = s_sp[m].vel;
-  if (s_sp[m].velmode && s_sp[m].enabled) {
-    float th = s_sp[m].theta_mech + s_sp[m].vel * CTRL_DT;
+  s_tel[m].a = i.a;
+  s_tel[m].b = i.b;
+  Mode  mode    = s_sp[m].mode;
+  bool  enabled = s_sp[m].enabled;
+  // Read BEFORE advancing, so theta_mech always means "the angle right now".
+  // All phase advance lives in COMP_TICKS, in one place.
+  float theta   = s_sp[m].theta_mech;
+  float uq_cmd  = s_sp[m].uq;
+  float va_duty = s_sp[m].va_duty;
+  float vb_duty = s_sp[m].vb_duty;
+  float vel     = 0.0f;
+  if (enabled && mode == MODE_PROFILE) {
+    // The profile is executed here, on the hardware-timed control tick, not
+    // by core0: a core0 stall (USB CDC writes, blocking I2C, anything) would
+    // otherwise show up directly as a step in the commanded field, i.e. as
+    // torque ripple. The elapsed time comes from an integer tick count, so a
+    // multi-minute move cannot accumulate float summation drift.
+    float t = (float)s_sp[m].ticks * CTRL_DT;
+    ProfileState st;
+    if (s_sp[m].cruise) {
+      st.t = t; st.pos = s_sp[m].prog.pos + s_sp[m].cruise_vel * CTRL_DT;
+      st.vel = s_sp[m].cruise_vel; st.acc = 0.0f; st.done = false;
+    } else {
+      st = s_sp[m].prof.at(t);
+      st.t = t;
+    }
+    vel = st.vel;
+    // Once the move is over the axis holds: velocity 0, angle frozen, still
+    // energised. Freezing the counter also keeps t from running away.
+    if (!st.done) ++s_sp[m].ticks;
+    s_sp[m].prog = st;
+    // Integrate the COMMANDED angle instead of driving it from st.pos: at
+    // 25000 rad a float resolves only ~2 mrad, which is 6 electrical degrees
+    // of quantisation noise on the field. Wrapping at one mechanical
+    // revolution keeps the integral small and is exact, because POLE_PAIRS is
+    // an integer and so the electrical angle is untouched by the wrap.
+    float th = theta + vel * CTRL_DT;
     if (th >= TWO_PI_F) th -= TWO_PI_F;
     else if (th < 0.0f) th += TWO_PI_F;
     s_sp[m].theta_mech = th;  // for the NEXT tick
   }
-
-  // Profile mode: position is authoritative, velocity interpolates it to NOW.
-  // Integrating velocity alone (velmode) is fine for "spin at N RPM", but for
-  // a position profile the caller's integral and the ISR's would be two
-  // independent sums of the same velocity, drifting apart with nothing to
-  // correct them. Here every setpoint resets the angle outright, so error
-  // cannot accumulate.
-  //
-  // The age is measured in real microseconds, not in control ticks. Counting
-  // ticks since the sequence number last changed does not work: the caller
-  // typically updates several times per tick, so the age is always 0, the
-  // feedforward never engages, and the commanded angle ends up quantized to
-  // the caller's update grid and sampled at a random phase by this ISR. That
-  // jitter is pure phase noise on the field -- velocity mode has none of it,
-  // because its angle is generated on the hardware tick itself. Interpolating
-  // against the timer removes the caller's rate from the picture entirely.
-  if (s_sp[m].profmode && s_sp[m].enabled) {
-    uint32_t age_us = time_us_32() - s_sp[m].t_us;
-    if (age_us > PROF_AGE_MAX_US) age_us = PROF_AGE_MAX_US;
-    float t = (float)age_us * 1e-6f;
-    // Where the caller says the axis should be right now. Second order,
-    // because first order errs in the direction that hurts: extrapolating on
-    // a stale velocity while DECELERATING predicts ahead of the truth, so the
-    // commanded angle snaps BACKWARD when the caller catches up, momentarily
-    // reversing torque. The error is 0.5*|acc|*t^2, growing with the square
-    // of the caller's stall.
-    float a = PROF_ACC_FF * s_sp[m].acc;
-    float v = s_sp[m].vel + a * t;
-    float target = sp.theta_mech + (s_sp[m].vel + 0.5f * a * t) * t;
-
-    // Do NOT use that target directly. It is reconstructed from a timestamp
-    // with 1 us resolution, which at 1000 RPM is 0.3 electrical degrees of
-    // random jitter on every control tick -- broadband phase noise on the
-    // field, and audibly rougher than velocity mode even at constant speed.
-    // Instead integrate the velocity on this tick exactly as velocity mode
-    // does (jitter-free by construction) and pull that integral toward the
-    // target slowly. The caller stays authoritative so nothing can drift,
-    // while PROF_TRACK low-passes the timing noise out of the angle.
-    float th;
-    if (!s_prof_primed[m]) {
-      th = target;
-      s_prof_primed[m] = true;
-    } else {
-      th = s_prof_th[m] + v * CTRL_DT;
-      float e = target - th;
-      if (e > PI_F) e -= TWO_PI_F;
-      else if (e < -PI_F) e += TWO_PI_F;
-      th += PROF_TRACK * e;
-    }
-    if (th >= TWO_PI_F) th -= TWO_PI_F;
-    else if (th < 0.0f) th += TWO_PI_F;
-    s_prof_th[m] = th;
-    sp.theta_mech = th;
-    sp.vel = v;  // so `we` tracks it too
-  }
-  sp.iq_cmd     = s_sp[m].iq_cmd;
-  sp.enabled    = s_sp[m].enabled;
-  sp.openloop   = s_sp[m].openloop;
-  // These two were missing: `sp` is an uninitialized local, so testing
-  // sp.ab_mode below was reading stack garbage. It happened to read false,
-  // which silently routed every ab_mode caller into the closed-loop PI with
-  // va_duty reinterpreted as an amps command -- and dropped vb_duty on the
-  // floor. Phases 1c and 5 both commanded nothing at all.
-  sp.ab_mode    = s_sp[m].ab_mode;
-  sp.vb_duty    = s_sp[m].vb_duty;
-  sp.velmode    = s_sp[m].velmode;
-  sp.profmode   = s_sp[m].profmode;
   spin_unlock(s_lock, irq);
 
-  if (!sp.enabled) {
-    piReset(s_pid[m]); piReset(s_piq[m]); s_derate[m] = 1.0f;
-    s_we[m] = 0.0f; s_we_primed[m] = false; s_lq[m] = PHASE_LQ; s_hold[m] = 0;
-    s_prof_primed[m] = false;
+  if (!enabled || mode == MODE_OFF) {
+    piReset(s_pid[m]); piReset(s_piq[m]);
+    s_lq[m] = PHASE_LQ;
     s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
     return;
   }
 
-  const float dt = CTRL_DT; // 12 kHz per motor
-
-  float theta_e = electricalAngle(sp.theta_mech);
-
-  // Electrical speed. In velocity mode the commanded value is exact and
-  // noise-free; otherwise fall back to differencing theta_e, wrapping the
-  // delta so the +-PI boundary does not read as a huge jump.
-  float we;
-  if (sp.velmode || sp.profmode) {
-    we = sp.vel * (float)POLE_PAIRS;
-    s_we[m] = we;
-  } else if (!s_we_primed[m]) {
-    s_prev_te[m] = theta_e; s_we_primed[m] = true; s_hold[m] = 0; we = 0.0f;
-  } else {
-    // In position mode theta_mech is written by core0, whose loop may run far
-    // slower than this 12 kHz tick -- so theta_e arrives as a staircase, flat
-    // for several ticks and then jumping. Differencing every tick would read
-    // 0,0,0,0,huge and hand a violently spiky we to the derate, the
-    // decoupling and the delay compensation all at once. Count the ticks the
-    // angle sat still and divide by the time that actually elapsed instead.
-    float d = theta_e - s_prev_te[m];
-    if (d > PI_F) d -= TWO_PI_F; else if (d < -PI_F) d += TWO_PI_F;
-    ++s_hold[m];
-    if (fabsf(d) > 1e-6f) {
-      s_we[m] += WE_ALPHA * (d / (s_hold[m] * CTRL_DT) - s_we[m]);
-      s_prev_te[m] = theta_e;
-      s_hold[m] = 0;
-    } else if (s_hold[m] * CTRL_DT > WE_TIMEOUT_S) {
-      s_we[m] = 0.0f;  // genuinely stopped, not just between updates
-    }
-    we = s_we[m];
-  }
-
-  float ud, uq;
-
-  if (sp.ab_mode) {
+  if (mode == MODE_AB) {
     // Direct stationary-frame duty mode: bypass all transforms and the PI.
-    // Used by phase 1c to test current sensing without dq-frame complexity.
+    // Used by phases 1c and 5 to drive a known voltage without dq-frame
+    // complexity in the path.
     piReset(s_pid[m]); piReset(s_piq[m]);
     auto clamp1 = [](float x){ return x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x); };
-    s_next_a[m] = clamp1(sp.iq_cmd);
-    s_next_b[m] = clamp1(sp.vb_duty);
-    uint32_t irq2 = spin_lock_blocking(s_lock);
-    s_tel[m].a = i.a; s_tel[m].b = i.b;
-    spin_unlock(s_lock, irq2);
+    s_next_a[m] = clamp1(va_duty);
+    s_next_b[m] = clamp1(vb_duty);
     return;
   }
 
-  if (sp.openloop) {
-    // Voltage mode: iq_cmd holds uq directly (volts), ud=0, PI not touched.
+  const float dt = CTRL_DT; // 12 kHz per motor
+  float theta_e = electricalAngle(theta);
+  // Electrical speed is exact in profile mode -- it is the commanded
+  // velocity, so no estimator is needed. Voltage mode commands no motion of
+  // its own, so it has none.
+  float we = (mode == MODE_PROFILE) ? vel * (float)POLE_PAIRS : 0.0f;
+
+  float ud, uq;
+
+  if (mode == MODE_VOLTAGE) {
+    // Open-loop: uq is commanded directly in volts, ud=0, PI not touched.
     ud = 0.0f;
-    uq = sp.iq_cmd;
+    uq = uq_cmd;
   } else {
     DQ dq = park(i, theta_e);
     s_teli[m].d = dq.d; s_teli[m].q = dq.q;
     // Voltage-limited current derate, FEEDFORWARD from speed.
-    // The earlier feedback version measured |ud| and scaled by
-    // (ud_lim/|ud|) -- which cannot work, because piStep already clamps its
-    // output to +-vbus. |ud| therefore never exceeds the bus, the ratio never
-    // drops below UD_FRAC, and the loop could not cut more than 15% no
-    // matter how far over budget it really was. Computing the limit from
-    // speed instead has no such blind spot:
+    // A feedback version that measures |ud| and scales by (ud_lim/|ud|)
+    // cannot work, because piStep already clamps its output to +-vbus: |ud|
+    // therefore never exceeds the bus, the ratio never drops below UD_FRAC,
+    // and the loop cannot cut more than 15% no matter how far over budget it
+    // really is. Computing the limit from speed has no such blind spot:
     //     ud = -we*Lq*iq   =>   iq_max = UD_FRAC*vbus / (|we|*Lq)
     // It is instant, cannot saturate, and needs no loop dynamics.
     float we_mag = fabsf(we);
-    float iq_eff = sp.iq_cmd;
+    float iq_eff = MOTOR_AMPS;
     if (we_mag > 1.0f) {
       // s_lq, not PHASE_LQ: Lq falls with current, so a constant measured at
       // 0.5 A under-derates at the low currents the limiter itself produces.
@@ -232,7 +161,6 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
       if (iq_eff >  iq_max) iq_eff =  iq_max;
       if (iq_eff < -iq_max) iq_eff = -iq_max;
     }
-    s_derate[m] = (fabsf(sp.iq_cmd) > 1e-4f) ? iq_eff / sp.iq_cmd : 1.0f;
 
     // Separate KP per axis: this motor is salient (Lq = 2.2 * Ld), so one
     // gain cannot place both poles. KI is shared -- see constants.h.
@@ -243,13 +171,12 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     //     Ld*did/dt = ud - R*id + we*Lq*iq
     //     Lq*diq/dt = uq - R*iq - we*Ld*id - we*lm
     // Cancelling the off-diagonal terms needs -we*Lq*iq on d and +we*Ld*id
-    // on q. Using the MEASURED currents for that (as the original lag comp
-    // did) is a trap: it closes a loop ud -> id -> uq -> iq -> ud whose gain
-    // is (we*Lq)(we*Ld)/(Zd*Zq), and at high speed Zd -> we*Ld and
-    // Zq -> we*Lq, so the gain approaches exactly 1 -- marginally stable
-    // before the pipeline delay is even counted. It also amplifies
-    // current-sense ripple by we*Lq, which is 30 V/A at 690 RPM. Measured on
-    // hardware the ceiling dropped from 690 to 550 RPM.
+    // on q. Using the MEASURED currents for that is a trap: it closes a loop
+    // ud -> id -> uq -> iq -> ud whose gain is (we*Lq)(we*Ld)/(Zd*Zq), and at
+    // high speed Zd -> we*Ld and Zq -> we*Lq, so the gain approaches exactly
+    // 1 -- marginally stable before the pipeline delay is even counted. It
+    // also amplifies current-sense ripple by we*Lq, which is 30 V/A at
+    // 690 RPM. Measured on hardware the ceiling dropped from 690 to 550 RPM.
     // The command has no such path. id_cmd is always 0, so only the d-axis
     // term survives.
     ud -= DECOUPLE_FRAC * we * PHASE_LQ * iq_eff;
@@ -266,9 +193,9 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     }
 
     // Backstop for whatever the derate has not caught up with yet. Scale ud
-    // and uq TOGETHER so the applied voltage vector keeps its angle: the old
-    // code zeroed uq outright, which removed all torque at exactly the speed
-    // where torque was needed, and turned the ceiling into a cliff.
+    // and uq TOGETHER so the applied voltage vector keeps its angle: zeroing
+    // uq outright removes all torque at exactly the speed where torque is
+    // needed, and turns the ceiling into a cliff.
     float umag = sqrtf(ud * ud + uq * uq);
     if (umag > vbus) {
       float sc = vbus / umag;
@@ -290,11 +217,6 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   s_telu[m].d = ud; s_telu[m].q = uq;
   s_next_a[m] = v.a;
   s_next_b[m] = v.b;
-
-  uint32_t irq2 = spin_lock_blocking(s_lock);
-  s_tel[m].a = i.a;
-  s_tel[m].b = i.b;
-  spin_unlock(s_lock, irq2);
 }
 
 static void __not_in_flash_func(pwmWrapISR)() {
@@ -329,74 +251,74 @@ void focStart() {
   s_lock = spin_lock_init(spin_lock_claim_unused(true));
   pwmInit();
   adcInit();
-  for (int m = 0; m < 2; ++m) { piReset(s_pid[m]); piReset(s_piq[m]); s_derate[m] = 1.0f; }
+  for (int m = 0; m < 2; ++m) { piReset(s_pid[m]); piReset(s_piq[m]); }
   multicore_launch_core1(core1Entry);
 }
 
-void focSetpoint(Motor m, float theta_mech, float iq_cmd, bool enabled) {
+void focEnable(Motor m, bool enable) {
   uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].enabled = enable;
+  spin_unlock(s_lock, irq);
+}
+
+// theta_mech is deliberately left alone: the profile is relative, so the move
+// starts from wherever the axis is now.
+void focSetProfile(Motor m, const Profile& p) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].mode = MODE_PROFILE;
+  s_sp[m].prof = p;
+  s_sp[m].cruise = false;
+  s_sp[m].ticks = 0;
+  s_sp[m].prog = p.at(0.0f);
+  spin_unlock(s_lock, irq);
+}
+
+void focSetVelocity(Motor m, float vel_rad_s) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].mode = MODE_PROFILE;
+  s_sp[m].prof = Profile();
+  s_sp[m].cruise = true;
+  s_sp[m].cruise_vel = vel_rad_s;
+  s_sp[m].ticks = 0;
+  s_sp[m].prog = ProfileState{0.0f, 0.0f, vel_rad_s, 0.0f, false};
+  spin_unlock(s_lock, irq);
+}
+
+void focSetVoltage(Motor m, float theta_mech, float uq_volts) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  s_sp[m].mode = MODE_VOLTAGE;
   s_sp[m].theta_mech = theta_mech;
-  s_sp[m].iq_cmd = clampCurrent(iq_cmd);
-  s_sp[m].enabled = enabled;
-  s_sp[m].openloop = false;
-  s_sp[m].ab_mode = false;
-  s_sp[m].velmode = false;
-  s_sp[m].profmode = false;
+  s_sp[m].uq = uq_volts;
   spin_unlock(s_lock, irq);
 }
 
-// Velocity mode: the caller supplies mechanical rad/s and the control ISR
-// integrates it. theta_mech is left untouched here, so switching over from
-// focSetpoint() continues from wherever that left the angle (e.g. 0 after an
-// alignment hold) rather than jumping.
-void focSetVelocity(Motor m, float vel_rad_s, float iq_cmd, bool enabled) {
+void focSetVoltageAB(Motor m, float va_duty, float vb_duty) {
   uint32_t irq = spin_lock_blocking(s_lock);
-  s_sp[m].vel = vel_rad_s;
-  s_sp[m].iq_cmd = clampCurrent(iq_cmd);
-  s_sp[m].enabled = enabled;
-  s_sp[m].openloop = false;
-  s_sp[m].ab_mode = false;
-  s_sp[m].velmode = true;
-  s_sp[m].profmode = false;
+  s_sp[m].mode = MODE_AB;
+  s_sp[m].va_duty = va_duty;
+  s_sp[m].vb_duty = vb_duty;
   spin_unlock(s_lock, irq);
 }
 
-// Profile mode: absolute position plus a velocity feedforward. theta_mech is
-// applied exactly as given on every update, so the caller's profile -- not an
-// ISR-side integral -- decides where the axis ends up.
-void focSetProfile(Motor m, float theta_mech, float vel_rad_s, float acc_rad_s2,
-                   float iq_cmd, bool enabled) {
+Profile focProfile(Motor m) {
   uint32_t irq = spin_lock_blocking(s_lock);
-  s_sp[m].theta_mech = theta_mech;
-  s_sp[m].vel = vel_rad_s;
-  s_sp[m].acc = acc_rad_s2;
-  s_sp[m].iq_cmd = clampCurrent(iq_cmd);
-  s_sp[m].enabled = enabled;
-  s_sp[m].openloop = false;
-  s_sp[m].ab_mode = false;
-  s_sp[m].velmode = false;
-  s_sp[m].profmode = true;
-  s_sp[m].t_us = time_us_32();
+  Profile p = s_sp[m].prof;
   spin_unlock(s_lock, irq);
+  return p;
 }
 
-void focSetVoltage(Motor m, float theta_mech, float uq_volts, bool enabled) {
+ProfileState focProgress(Motor m) {
   uint32_t irq = spin_lock_blocking(s_lock);
-  s_sp[m].theta_mech = theta_mech;
-  s_sp[m].iq_cmd = uq_volts;   // repurposed as voltage command; no current clamping
-  s_sp[m].enabled = enabled;
-  s_sp[m].openloop = true;
-  s_sp[m].ab_mode = false;
-  s_sp[m].velmode = false;
-  s_sp[m].profmode = false;
+  ProfileState st = s_sp[m].prog;
   spin_unlock(s_lock, irq);
+  return st;
 }
 
-float focDerate(Motor m) {
+AB focTelemetry(Motor m) {
   uint32_t irq = spin_lock_blocking(s_lock);
-  float d = s_derate[m];
+  AB t; t.a = s_tel[m].a; t.b = s_tel[m].b;
   spin_unlock(s_lock, irq);
-  return d;
+  return t;
 }
 
 DQ focTelemetryU(Motor m) {
@@ -411,24 +333,6 @@ DQ focTelemetryI(Motor m) {
   DQ t; t.d = s_teli[m].d; t.q = s_teli[m].q;
   spin_unlock(s_lock, irq);
   return t;
-}
-
-AB focTelemetry(Motor m) {
-  uint32_t irq = spin_lock_blocking(s_lock);
-  AB t; t.a = s_tel[m].a; t.b = s_tel[m].b;
-  spin_unlock(s_lock, irq);
-  return t;
-}
-
-void focSetVoltageAB(Motor m, float va_duty, float vb_duty, bool enabled) {
-  uint32_t irq = spin_lock_blocking(s_lock);
-  s_sp[m].iq_cmd  = va_duty;
-  s_sp[m].vb_duty = vb_duty;
-  s_sp[m].enabled = enabled;
-  s_sp[m].ab_mode = true;
-  s_sp[m].velmode = false;
-  s_sp[m].profmode = false;
-  spin_unlock(s_lock, irq);
 }
 
 } // namespace rotev

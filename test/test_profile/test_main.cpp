@@ -5,8 +5,6 @@ using namespace rotev;
 
 void setUp() {} void tearDown() {}
 
-static const float PI_F = 3.14159265358979323846f;
-
 void test_default_profile_is_empty() {
   Profile p;
   TEST_ASSERT_FALSE(p.valid());

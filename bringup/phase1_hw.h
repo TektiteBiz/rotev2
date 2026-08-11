@@ -1,12 +1,13 @@
 #pragma once
 #include <Arduino.h>
 #include <rotev.h>
+#include <rotev_internal.h>
 using namespace rotev;
 
-// Basic hardware verification: enable/disable the drivers, log idle phase
-// currents and bus voltage, confirm the LED/buttons/buzzer work. No PWM is
-// applied to the motor windings beyond what the driver requires to
-// acknowledge enable.
+// Basic hardware verification: wake the drivers, log idle phase currents and
+// bus voltage, confirm the LED/buttons/buzzer work. No motion is commanded,
+// so every current reading here is the sensor's zero -- that is the number
+// ISENSE_OFFSET_x is calibrated from.
 
 static void playGoTune() {
   const uint16_t notes[] = {1000, 1500, 2000};
@@ -20,21 +21,18 @@ static void playGoTune() {
 void setup() {
   Serial.begin(115200);
   begin();
-  motorEnable(MOTOR_1);   // nSLEEP high; no motion commanded
+  motorEnable(MOTOR_1);  // nSLEEP high; no motion commanded
   motorEnable(MOTOR_2);
 }
 
 void loop() {
-  bool go   = buttonPressed(BTN_GO);
-  bool stop = buttonPressed(BTN_STOP);
+  Serial.print(">iA1:");  Serial.print(motorCurrentA(MOTOR_1), 3);
+  Serial.print(",iB1:");  Serial.print(motorCurrentB(MOTOR_1), 3);
+  Serial.print(",iA2:");  Serial.print(motorCurrentA(MOTOR_2), 3);
+  Serial.print(",iB2:");  Serial.print(motorCurrentB(MOTOR_2), 3);
+  Serial.print(",vbus:"); Serial.println(busVoltage(), 2);
 
-  Serial.print(">motorCurrentA(MOTOR_1):"); Serial.print(motorCurrentA(MOTOR_1));
-  Serial.print(",motorCurrentB(MOTOR_1):"); Serial.print(motorCurrentB(MOTOR_1));
-  Serial.print(",motorCurrentA(MOTOR_2):"); Serial.print(motorCurrentA(MOTOR_2));
-  Serial.print(",motorCurrentB(MOTOR_2):"); Serial.print(motorCurrentB(MOTOR_2));
-  Serial.print(",busVoltage:"); Serial.println(busVoltage());
-
-  if (go) { ledColor(0, 255, 0); playGoTune(); }
-  if (stop) ledColor(255, 0, 0);
+  if (buttonPressed(BTN_GO))   { ledColor(0, 255, 0); playGoTune(); }
+  if (buttonPressed(BTN_STOP)) { ledColor(255, 0, 0); }
   delay(50);
 }

@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include <rotev.h>
+#include <rotev_internal.h>
 using namespace rotev;
 
 // Precise winding R and L characterization.
@@ -9,8 +10,8 @@ using namespace rotev;
 // Both values in constants.h started as datasheet numbers and both were
 // wrong -- L by 2x -- which halved the current-loop bandwidth and doubled
 // the inductive voltage the loop fights at speed. This phase measures them
-// from the hardware instead, using open-loop voltage (focSetVoltageAB, no PI
-// in the path) and the existing current sense.
+// from the hardware instead, using open-loop voltage (motorSetVoltageAB, no
+// PI in the path) and the existing current sense.
 //
 // WHAT IS MEASURED
 //   R  : total series resistance the controller actually sees -- winding +
@@ -58,16 +59,21 @@ using namespace rotev;
 // and to the driver's fixed voltage drop -- both land in the intercept,
 // which is reported separately as a diagnostic.
 //
-// This motor is salient: Ld came out ~3.8 mH against an Lq near 7 mH. That
+// This motor is salient: Ld came out ~3.8 mH against an Lq of ~8.3 mH. That
 // is expected for a hybrid stepper -- the magnet sits in the d-axis flux
-// path with mu_r ~ 1, so Ld is the LOW one. constants.h carries a single
-// PHASE_L for both axes, which cannot be right for both; PHASE_L should
-// track Lq, since that is what sets ud.
+// path with mu_r ~ 1, so Ld is the LOW one. constants.h therefore carries
+// both PHASE_LD and PHASE_LQ, already populated with the means this phase
+// measured on two motors; re-run it to re-derive them, not to discover them.
 //
 // THE SPEED SWEEP MUST STAY IN SYNC. There is no position sensor, so if the
-// rotor pulls out the numbers are meaningless. Speeds below are kept well
-// under the observed ~400 RPM ceiling, and mean id is printed per point as
-// the check: it should sit near 0. A point with |id| > 0.05 A is flagged.
+// rotor pulls out the numbers are meaningless. The sweep now runs at
+// MOTOR_AMPS (0.8 A), the fixed closed-loop current, rather than the 0.5 A
+// the old speeds were chosen against. Pull-out is set by ud = -we*Lq*iq
+// reaching the bus, i.e. rpm_max*iq ~= 280 on 12 V, so raising the current
+// from 0.5 to 0.8 A drops the ceiling from ~560 to ~350 RPM. The sweep is
+// lowered to 80-200 RPM to keep the same fraction of the ceiling as before.
+// Mean id is printed per point as the check: it should sit near 0. A point
+// with |id| > 0.05 A is flagged.
 
 static constexpr int      N_PRE = 32;    // samples before the step (gives i0)
 static constexpr int      N_POST = 480;  // samples after (~29 tau at 7 mH)
@@ -83,10 +89,9 @@ static constexpr uint32_t FIT_SKIP_US = 400;
 static constexpr float V_ALIGN = 3.0f;  // parks the rotor, ~0.70 A
 static constexpr float V_LO = 1.0f, V_HI = 3.0f;  // Ld step
 
-// Lq sweep: closed-loop FOC at constant speed, well under the ~400 RPM
-// pull-out ceiling so the rotor is guaranteed to stay in sync.
-static constexpr float    LQ_AMPS = 0.5f;
-static const     float    LQ_RPM[] = {100.0f, 150.0f, 200.0f, 250.0f, 300.0f};
+// Lq sweep: closed-loop FOC at constant speed, well under the ~350 RPM
+// pull-out ceiling at MOTOR_AMPS so the rotor is guaranteed to stay in sync.
+static const     float    LQ_RPM[] = {80.0f, 110.0f, 140.0f, 170.0f, 200.0f};
 static constexpr int      N_LQ = sizeof(LQ_RPM) / sizeof(LQ_RPM[0]);
 static constexpr uint32_t LQ_SETTLE_MS = 400;
 static constexpr uint32_t LQ_AVG_MS = 300;
@@ -107,7 +112,7 @@ static inline float axisCurrent(bool axis_a) {
 }
 
 static inline void applyV(float va, float vb) {
-  motorWriteVoltageAB(va, vb, MOTOR_1);
+  motorSetVoltageAB(MOTOR_1, va, vb);
 }
 
 // Average REPS step responses into buf[], sampled on a fixed 100 us grid.
@@ -188,10 +193,10 @@ static void rampTo(float rpm_from, float rpm_to, uint32_t ms) {
   uint32_t t0 = millis(), el;
   while ((el = millis() - t0) < ms) {
     float rpm = rpm_from + (rpm_to - rpm_from) * ((float)el / (float)ms);
-    motorWriteVelocity(2.0f * PI * (rpm / 60.0f), LQ_AMPS, MOTOR_1);
+    motorSetVelocity(MOTOR_1, 2.0f * PI * (rpm / 60.0f));
     delay(1);
   }
-  motorWriteVelocity(2.0f * PI * (rpm_to / 60.0f), LQ_AMPS, MOTOR_1);
+  motorSetVelocity(MOTOR_1, 2.0f * PI * (rpm_to / 60.0f));
 }
 
 static OpPoint measurePoint(float rpm) {
@@ -286,7 +291,7 @@ void setup() {
   // ---- Lq + magnet flux: closed loop, spinning, id held at 0 ----
   Serial.println("# Lq sweep (closed loop, spinning -- keep the shaft free)");
   applyV(0.0f, 0.0f);
-  motorWrite(0.0f, LQ_AMPS, MOTOR_1);  // leaves ab_mode, re-aligns at theta=0
+  motorSetVelocity(MOTOR_1, 0.0f);  // leaves AB mode, re-aligns at theta=0
   delay(800);
   rampTo(0.0f, LQ_RPM[0], 1500);
 
@@ -314,7 +319,7 @@ void setup() {
   float lam = f_lm.a;
 
   rampTo(LQ_RPM[N_LQ - 1], 0.0f, 1500);
-  motorDisable(MOTOR_1);
+  motorEnable(MOTOR_1, false);
 
   Serial.println();
   Serial.println("========= RESULTS =========");
@@ -345,7 +350,7 @@ void setup() {
   Serial.println("# Ld R2 below ~0.999 means the fit is not a clean exponential.");
   Serial.println("# Lq/lambda_m R2 below ~0.999, or a nonzero intercept, means the");
   Serial.println("#   speed sweep was not in steady state -- widen LQ_SETTLE_MS.");
-  Serial.println("# constants.h wants PHASE_R = sweep R, PHASE_L = Lq.");
+  Serial.println("# constants.h wants PHASE_R = sweep R, PHASE_LD = Ld, PHASE_LQ = Lq.");
 }
 
 void loop() {}

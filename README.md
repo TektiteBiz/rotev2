@@ -1,10 +1,11 @@
 # RotEv2 FOC Library
 
-PlatformIO/Arduino library for the **Tektite RotEv2** board (RP2354). Provides dual-core field-oriented control (FOC) for two independent 2-phase stepper motors, plus RGB LED and button I/O.
+PlatformIO/Arduino library for the **Tektite RotEv2** board (RP2354). It runs field-oriented
+control for the two on-board 2-phase stepper motors on core1, and exposes a small motion API on
+core0: you build a motion **profile**, hand it to a motor, and poll its progress.
 
-- Open-loop position control (theta_rad → inverse Park → PWM; no Clarke — phase currents are already in the αβ frame)
-- Closed-loop current control (PI regulators, pole-placement tuned)
-- Active-high buttons, active-low RGB LED
+Everything the API takes or returns is in **radians and seconds** (angles, velocities,
+accelerations). Motor current is fixed internally at 0.8 A and is not exposed.
 
 ---
 
@@ -22,15 +23,20 @@ lib_deps     = https://github.com/Nv7-Github/rotev2.git
 build_flags  = -std=gnu++17
 ```
 
-See `docs/BRINGUP.md` for hardware bring-up and first-boot validation steps.
-
 ---
 
 ## Dual-Core Contract
 
-**The library owns core1.** The FOC loop runs on core1 and is started by `begin()`. User sketches run on core0 (`setup()` / `loop()`).
+**The library owns core1.** The 24 kHz control ISR runs there and is started by `begin()`. Your
+sketch runs on core0 (`setup()` / `loop()`).
 
-**Do NOT define `setup1()` or `loop1()` in your sketch** — doing so will conflict with the library's core1 entry point.
+**Do NOT define `setup1()` or `loop1()` in your sketch** — that conflicts with the library's core1
+entry point.
+
+The profile itself is executed by the control ISR, not by your `loop()`. That is deliberate: a
+core0 stall (a USB serial write, a blocking I2C transaction) would otherwise land as a step in the
+commanded field, i.e. as torque ripple. Your loop only decides *which* profile runs; it never has
+to keep time.
 
 ---
 
@@ -41,20 +47,140 @@ See `docs/BRINGUP.md` for hardware bring-up and first-boot validation steps.
 using namespace rotev;
 
 void setup() {
+  Serial.begin(115200);
   begin();
+
+  // 100 rad forward, cruising at 100 rad/s, reaching that in 0.5 s.
+  Profile p = Profile::fromVelAccel(100.0f, 100.0f, 200.0f);
+  p.print();
+
   motorEnable(MOTOR_1);
-  ledColor(0, 0, 255);   // blue = running
+  motorSetProfile(MOTOR_1, p);
+  ledColor(0, 0, 255);  // blue = running
 }
 
 void loop() {
-  static float theta = 0;
-  theta += 0.01f;
-  motorWrite(theta, 0.3f, MOTOR_1);  // advance position, 0.3 A
-  delay(1);
+  ProfileState st = motorProgress(MOTOR_1);
+  Serial.printf("t %.2f s  pos %.1f rad  vel %.1f rad/s\n", st.t, st.pos, st.vel);
+  if (st.done) ledColor(0, 255, 0);  // green = arrived
+  delay(100);
 }
 ```
 
-See `examples/Basic/Basic.ino` for the full example.
+See `examples/Basic/Basic.ino`.
+
+---
+
+## Profile
+
+A `Profile` is a complete motion plan: a distance, and the velocity/acceleration envelope used to
+cover it. It is pure math with no hardware attached, so you can build, inspect, print, copy and
+store profiles freely and only later hand one to a motor.
+
+The shape is trapezoidal in velocity — constant acceleration up to the cruise speed, constant
+speed, then constant deceleration back to rest — so position traces the familiar S. A move too
+short to reach its cruise speed before it must start stopping degenerates to a triangle
+(`cruiseTime() == 0`) at the same acceleration.
+
+Distances are **signed**: a negative distance runs the move backwards. Velocity and acceleration
+arguments are magnitudes.
+
+### Constructing
+
+```cpp
+Profile();                                                        // empty, valid() == false
+static Profile fromVelAccel(float distance, float max_vel, float max_accel);
+static Profile fromTimeAccel(float distance, float time, float max_accel);
+Profile scaleDistance(float k) const;
+Profile scaleTime(float k) const;
+```
+
+- **`fromVelAccel(distance, max_vel, max_accel)`** — the usual one. Cover `distance` rad, never
+  exceeding `max_vel` rad/s or `max_accel` rad/s². The duration falls out of the numbers.
+
+  ```cpp
+  Profile p = Profile::fromVelAccel(100.0f, 100.0f, 200.0f);  // ~1.5 s
+  ```
+
+- **`fromTimeAccel(distance, time, max_accel)`** — cover `distance` rad in exactly `time` seconds
+  without exceeding `max_accel`. The cruise velocity is solved for. If `time` is shorter than the
+  fastest move `max_accel` allows, you get that fastest move instead, and `duration()` is then
+  larger than the `time` you asked for — check it if that matters.
+
+  ```cpp
+  Profile p = Profile::fromTimeAccel(100.0f, 2.0f, 200.0f);   // exactly 2 s
+  ```
+
+- **`scaleDistance(k)`** — vertical stretch of an existing profile. Same durations; distance,
+  velocity and acceleration all scale by `k`. A negative `k` reverses the move, which is how you
+  build a return leg:
+
+  ```cpp
+  Profile back = p.scaleDistance(-1.0f);  // same envelope, opposite direction
+  ```
+
+- **`scaleTime(k)`** — horizontal stretch. Same distance; every duration scales by `k`, so
+  velocity scales by `1/k` and acceleration by `1/k²`. `k` must be positive.
+
+  ```cpp
+  Profile gentle = p.scaleTime(2.0f);  // same move, twice as long, quarter the accel
+  ```
+
+Bad arguments (zero, negative or non-finite distance/velocity/accel/time) produce an **empty**
+profile rather than a fault: `valid()` is `false`, everything reads zero, and handing it to a
+motor simply commands no motion.
+
+### Querying
+
+```cpp
+float distance()    const;  // signed, radians
+float duration()    const;  // seconds, accel + cruise + decel
+float maxVelocity() const;  // signed peak (cruise) velocity, rad/s
+float maxAccel()    const;  // signed peak acceleration, rad/s^2
+float accelTime()   const;  // seconds
+float cruiseTime()  const;  // seconds, 0 for a triangular profile
+float decelTime()   const;  // seconds, always == accelTime()
+bool  valid()       const;  // false for an empty/degenerate profile
+```
+
+`maxVelocity()` and `maxAccel()` carry the sign of the move, so they are the *actual* peak values
+reached, not the magnitudes you passed in — for a triangular profile `maxVelocity()` is below the
+`max_vel` you asked for.
+
+### Sampling
+
+```cpp
+ProfileState at(float t) const;   // t clamped to [0, duration()]
+
+struct ProfileState {
+  float t;    // seconds since the profile started
+  float pos;  // radians travelled (signed)
+  float vel;  // rad/s (signed)
+  float acc;  // rad/s^2 (signed)
+  bool  done; // t >= duration()
+};
+```
+
+`at()` evaluates the profile at any time without a motor being involved — useful for plotting or
+for checking a move before committing to it. `t` is clamped, so `at(0)` is the start and any `t`
+past the end returns the final position with zero velocity and `done == true`.
+
+### Printing
+
+```cpp
+void print() const;
+```
+
+Dumps the profile to `Serial` in a readable block:
+
+```
+Profile: 100.000 rad in 1.500 s
+  peak vel   100.000 rad/s (954.9 rpm)
+  peak accel 200.000 rad/s^2
+  accel      0.500 s   cruise 0.500 s   decel 0.500 s
+```
+
+An empty profile prints `Profile: <empty>`.
 
 ---
 
@@ -68,19 +194,31 @@ All symbols are in `namespace rotev`. Include `<rotev.h>`.
 void begin();
 ```
 
-Initializes GPIO, PWM, ADC, LED, and starts the FOC loop on core1. Call once from `setup()`.
+Initializes GPIO, PWM, both ADCs, the LED and the buzzer, and starts the control loop on core1.
+Call once from `setup()`.
 
-### Motor Control
+### Motor
 
 ```cpp
-void motorEnable(Motor m);
-void motorDisable(Motor m);
-void motorWrite(float theta_rad, float amps, Motor m);
+void motorEnable(Motor m, bool enable = true);
+void motorSetProfile(Motor m, const Profile& p);
+Profile      motorProfile(Motor m);
+ProfileState motorProgress(Motor m);
 ```
 
-- `motorEnable(m)` — releases nSLEEP and re-applies the last commanded setpoint. **Caveat:** the stored setpoint is the last value passed to `motorWrite()`, which defaults to 0 A at startup. To guarantee starting from rest, call `motorWrite(theta, 0.0f, m)` before `motorEnable(m)`.
-- `motorDisable(m)` — zeros the current command and asserts nSLEEP.
-- `motorWrite(theta_rad, amps, m)` — sets the position angle (radians, any range) and the q-axis (torque) current command in amps. The d-axis current setpoint is held at 0. `amps` is clamped to ±1.1 A (sensor range).
+- **`motorEnable(m)`** — releases the driver's nSLEEP and lets the axis drive current.
+  `motorEnable(m, false)` zeroes the current and puts the driver back to sleep.
+- **`motorSetProfile(m, p)`** — starts `p` immediately, from wherever the axis currently is.
+  Profiles are **relative**: the distance is measured from the position at the moment you call
+  this, and the profile clock restarts at 0. Calling it again mid-move abandons the old profile
+  and starts the new one from the current position. Setting a profile on a disabled motor stores
+  it; it starts running when you enable the motor.
+- **`motorProfile(m)`** — a copy of the profile currently executing.
+- **`motorProgress(m)`** — where that profile is right now: elapsed time, position, velocity,
+  acceleration, and whether it has finished. Poll `.done` to sequence moves.
+
+When a profile finishes, the axis **holds**: velocity zero, angle frozen, still energised, so it
+resists being pushed off target. Call `motorEnable(m, false)` to release it.
 
 ### LED
 
@@ -88,7 +226,7 @@ void motorWrite(float theta_rad, float amps, Motor m);
 void ledColor(uint8_t r, uint8_t g, uint8_t b);
 ```
 
-Sets the RGB LED. The LED is **active-low**, driven by PWM. Values are 0–255 (255 = full brightness, 0 = off).
+Sets the RGB LED, 0–255 per channel (0 = off, 255 = full brightness).
 
 ### Buzzer
 
@@ -97,9 +235,8 @@ void buzzerOn(uint16_t freq_hz);
 void buzzerOff();
 ```
 
-Drives the passive piezo buzzer on GPIO4 at 50% duty cycle. `freq_hz` is clamped to 1000-4000 Hz.
-Calling `buzzerOn()` again while already sounding retunes the frequency without needing to call
-`buzzerOff()` first.
+Drives the passive piezo buzzer at 50% duty. `freq_hz` is clamped to 1000–4000 Hz. Calling
+`buzzerOn()` again while sounding retunes the frequency; you do not need `buzzerOff()` in between.
 
 ### Buttons
 
@@ -107,120 +244,32 @@ Calling `buzzerOn()` again while already sounding retunes the frequency without 
 bool buttonPressed(Button b);
 ```
 
-Returns `true` if the specified button is currently pressed. Buttons are active-high with internal pull-downs.
+`true` while the button is held.
 
-### Current Telemetry
-
-```cpp
-float motorCurrentA(Motor m);
-float motorCurrentB(Motor m);
-```
-
-Returns the most recent phase A or phase B current reading (amps) from the FOC loop's ADC snapshot.
-
-### External ADC (Bus Voltage + User Channels)
+### ADC and Bus Voltage
 
 ```cpp
-float adcRead(AdcChannel ch);  // ADC_AIN1 / ADC_AIN2 / ADC_AIN3
-float busVoltage();
+float adcRead(AdcChannel ch);  // ADC_AIN1 / ADC_AIN2 / ADC_AIN3, volts
+float busVoltage();            // volts
 ```
 
-An ADS1015 I2C ADC (on the internal I2C1 bus, GPIO18/19 — not user-facing) samples the motor bus
-voltage (via a 7.3kΩ/2.2kΩ divider) and 3 user-facing channels (AIN1-3) in the background, fully
-automatically — there is nothing to call or poll. A repeating timer started by `begin()` round-robins
-the 4 channels, weighted so bus voltage updates at roughly 1kHz (needed internally by the FOC loop's
-inverse-Park) while each user channel updates at roughly 150-250Hz (ample for telemetry/display use).
-`adcRead()` and `busVoltage()` return the most recently cached sample in volts; both are
-non-blocking.
+An on-board ADS1015 samples the motor bus voltage and the three user channels (AIN1–3) in the
+background — there is nothing to start or poll. A timer started by `begin()` round-robins the four
+channels, weighted so bus voltage refreshes at roughly 1 kHz (the control loop needs it) and each
+user channel at roughly 150–250 Hz. Both calls return the most recent cached sample in volts and
+are non-blocking.
 
 ### Enums
 
 ```cpp
-enum Motor  : uint8_t { MOTOR_1 = 0, MOTOR_2 = 1 };
-enum Button : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
+enum Motor      : uint8_t { MOTOR_1 = 0, MOTOR_2 = 1 };
+enum Button     : uint8_t { BTN_STOP = 0, BTN_GO = 1 };
 enum AdcChannel : uint8_t { ADC_AIN1 = 0, ADC_AIN2 = 1, ADC_AIN3 = 2 };
 ```
 
 ---
 
-## GPIO / Bus Map
-
-| Signal | GPIO | Notes |
-|---|---|---|
-| PHA_2 | 0 | Motor 2 phase A PWM (DRV8874, locked-antiphase; EN hardwired HIGH) |
-| PHB_2 | 1 | Motor 2 phase B PWM |
-| PHA_1 | 2 | Motor 1 phase A PWM |
-| PHB_1 | 3 | Motor 1 phase B PWM |
-| BUZZ | 4 | Passive piezo buzzer, 1-4kHz, 50% duty |
-| — | 5-7 | Free GPIO (6, 7 also usable as general-purpose PWM-capable user GPIO) |
-| LED_R | 8 | Red, active-low PWM |
-| LED_G | 9 | Green, active-low PWM |
-| SPI1_SCK / LOOP_TIMING | 10 | SPI1 SCK; also bringup loop-timing pin |
-| SPI1_MOSI | 11 | SPI1 MOSI (user bus) |
-| SPI1_MISO | 12 | SPI1 MISO (user bus) |
-| SPI1_CS | 13 | SPI1 CS (user bus) |
-| LED_B | 14 | Blue, active-low PWM |
-| I2C0_SDA | 16 | Board has pull-ups fitted (user bus) |
-| I2C0_SCL | 17 | Board has pull-ups fitted (user bus) |
-| I2C1_SDA | 18 | ADS1015 ADC (internal, not user-facing) |
-| I2C1_SCL | 19 | ADS1015 ADC (internal, not user-facing) |
-| BTN_STOP | 20 | Active-high, internal pull-down |
-| BTN_GO | 21 | Active-high, internal pull-down |
-| nSLEEP_1 | 22 | Motor 1 driver sleep (active-low) |
-| nSLEEP_2 | 23 | Motor 2 driver sleep (active-low) |
-| SOB_1 / ADC0 | 26 | Motor 1 phase B current sense |
-| SOA_1 / ADC1 | 27 | Motor 1 phase A current sense |
-| SOB_2 / ADC2 | 28 | Motor 2 phase B current sense |
-| SOA_2 / ADC3 | 29 | Motor 2 phase A current sense |
-
-SPI1 (GPIO 10–13) and I2C0 (GPIO 16–17) are routed to headers and are usable as plain GPIO when not needed as buses. GPIO 24/25 are general GPIO but cannot do PWM (they overlap the LED PWM slice).
-
----
-
-## Motor Specifications (14HS11-1004)
-
-| Parameter | Value |
-|---|---|
-| Step angle | 1.8° (200 steps/rev) |
-| Pole pairs | 50 |
-| Phase resistance | 4.042 Ω (measured, mean of 2 motors; datasheet says 3.5) |
-| Phase inductance | Ld 3.79 mH, Lq 8.28 mH (measured, mean of 2; datasheet says 3.5) |
-| Rated current | 1.0 A |
-
----
-
-## FOC / PI Tuning
-
-Pole-placement design: current loop bandwidth = 1000 rad/s.
-
-```
-kP_d = BANDWIDTH * Ld = 1000 * 0.0037946 = 3.79
-kP_q = BANDWIDTH * Lq = 1000 * 0.0082764 = 8.28
-kI   = BANDWIDTH * R  = 1000 * 4.0417   = 4042   (shared)
-```
-
-Bus voltage is read live from the ADS1015 (`busVoltage()`, ~1kHz) and used behind the inverse-Park
-transform to normalize duty cycle. A nominal 12V fallback is used only until the first real ADC
-sample lands at boot.
-
----
-
-## Current Sensing
-
-| Parameter | Value |
-|---|---|
-| Amplifier | INA181A2 |
-| Shunt | 30 mΩ |
-| Gain | 50 V/V |
-| Reference | 1.65 V (mid-rail) |
-| ADC reference | 3.3 V, 12-bit (0–4095) |
-| Sensitivity | ≈ 0.54 mA/count |
-| Range | ±1.1 A |
-
-Commands passed to `motorWrite()` are clamped to ±1.1 A.
-
----
-
 ## Hardware Bring-Up
 
-See [`docs/BRINGUP.md`](docs/BRINGUP.md) for step-by-step hardware validation, phase-by-phase test procedures, and expected oscilloscope waveforms.
+See [`docs/BRINGUP.md`](docs/BRINGUP.md) for board validation — it is for bringing up a new board,
+not for using the library.
