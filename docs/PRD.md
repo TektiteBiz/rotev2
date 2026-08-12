@@ -460,3 +460,17 @@ the back-EMF term and is why every `lambda_m` extraction returns negative. A
 single flipped channel would be a reflection instead, which turns the dq
 quantities into a 2*we signal the PI cannot track; the fact that `|i|` tracks its
 command is what rules that out.
+
+### Disabling a PWM slice freezes its output level; CC/CTR writes do not clear it
+The PWM output flop only re-evaluates on a counter clock edge, and a slice with its `en` bit
+cleared gets no clocks. So clearing `pwm_hw->en` leaves the pin latched at whatever level it
+happened to hold, and the obvious follow-up — `pwm_set_gpio_level(pin, 0)` plus
+`pwm_set_counter(slice, 0)` — does **nothing** to the pin, because neither write is a clock edge.
+`buzzOff()` did exactly that and left BUZZ stuck high on roughly half of all calls (50% duty), a
+steady 3.3V across the piezo, measurable with a multimeter after the sketch finished. The piezo is
+capacitive so it draws no meaningful current, but the DC bias couples 3V3 rail ripple straight
+across the diaphragm — heard as continuous hiss/static long after the last note — and the
+diaphragm dumps its stored charge as an audible chirp when the board is powered down. The only way
+to guarantee 0V is to take the pin away from the PWM block: `gpio_set_function(pin, GPIO_FUNC_SIO)`
+with the pad driven low, and hand it back to `GPIO_FUNC_PWM` in `buzzOn()` only after the slice is
+already toggling.
