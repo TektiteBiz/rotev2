@@ -129,6 +129,47 @@ Profile scaleTime(float k) const;
   Profile gentle = p.scaleTime(2.0f);  // same move, twice as long, quarter the accel
   ```
 
+### Multi-leg moves
+
+```cpp
+struct Leg {
+  float dist;   // signed, rad
+  float accel;  // magnitude, rad/s^2
+  float decel;  // magnitude, rad/s^2
+};
+
+static bool fromLegs(const Leg* legs, int n, float time, Profile* out);
+```
+
+`fromLegs()` solves a whole sequence at once: it finds the single cruise velocity at which the legs,
+run back to back, take exactly `time` seconds, and writes the resulting profiles to `out[0..n)`.
+Each leg keeps its own accel and decel. Sharing one cruise velocity is what makes the sequence read
+as one continuous move rather than n unrelated ones.
+
+```cpp
+const Leg legs[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}, {0.5f, 1.75f, 4.78f}};
+Profile out[3];
+if (!Profile::fromLegs(legs, 3, 9.9f, out)) { /* budget too tight -- see below */ }
+```
+
+```
+leg1   3.00 rad v=1.3451 ta 0.769 tc 1.705 td 0.281  T 2.7554
+leg2   7.00 rad v=1.3451 ta 1.345 tc 4.147 td 0.769  T 6.2611
+leg3   0.50 rad v=1.1318 ta 0.647 tc 0.000 td 0.237  T 0.8835   <- pinned triangular
+```
+
+A leg too short to reach the shared velocity — leg 3 above, whose ramps meet at 1.132 rad/s — simply
+runs flat out as a triangle and takes what it takes; the solver slows the other legs to absorb the
+difference so the total still lands on the budget. Getting this wrong is subtle: a saturated leg's
+duration stops responding to the cruise velocity entirely, so a solver that keeps crediting it with
+the trapezoid formula lands a few milliseconds short.
+
+The return value is **false** when `time` is below the flat-out total (every leg triangular at its
+own limits). `out[]` is still filled, with that flat-out move — runnable, just slower than you asked
+for — so you can check `duration()` to see what was actually possible. Degenerate input (`n <= 0`,
+a null array, or a leg with a zero/non-finite distance, accel or decel) leaves every `out[]` entry
+empty and returns false. Nothing is allocated; both arrays are caller-owned.
+
 Bad arguments (zero, negative or non-finite distance/velocity/accel/time) produce an **empty**
 profile rather than a fault: `valid()` is `false`, everything reads zero, and handing it to a
 motor simply commands no motion.

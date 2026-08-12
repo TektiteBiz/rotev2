@@ -81,6 +81,98 @@ Profile Profile::fromTimeAccelDecel(float distance, float time, float max_accel,
   return fromAccelDecel(distance, v, A, Dc);
 }
 
+// Ramp time per unit of cruise velocity, and the velocity at which the leg's
+// two ramps meet with no cruise left between them.
+static inline float legRampSlope(const Leg& l) {
+  return 1.0f / std::fabs(l.accel) + 1.0f / std::fabs(l.decel);
+}
+static inline float legTriangleVel(const Leg& l, float slope) {
+  return std::sqrt(2.0f * std::fabs(l.dist) / slope);
+}
+
+// Duration of one leg at a shared cruise velocity v. The clamp is the whole
+// point: a leg whose ramps cannot reach v is a triangle, so its duration stops
+// responding to v entirely. Crediting it with the trapezoid formula past that
+// point keeps adding time that the leg will never spend, which is exactly how
+// a solved velocity ends up missing the requested total.
+static float legDuration(const Leg& l, float v) {
+  const float D = std::fabs(l.dist), s = legRampSlope(l);
+  const float v_tri = legTriangleVel(l, s);
+  return (v >= v_tri) ? s * v_tri : 0.5f * v * s + D / v;
+}
+
+bool Profile::fromLegs(const Leg* legs, int n, float time, Profile* out) {
+  if (!legs || !out || n <= 0) return false;
+  for (int i = 0; i < n; ++i) {
+    if (!finitePos(std::fabs(legs[i].dist)) || !finitePos(std::fabs(legs[i].accel)) ||
+        !finitePos(std::fabs(legs[i].decel))) {
+      for (int j = 0; j < n; ++j) out[j] = Profile();
+      return false;
+    }
+  }
+
+  // Flat out, every leg is its own triangle: that is the fastest the sequence
+  // can go, and the upper bound on any useful cruise velocity.
+  float v_hi = 0.0f, t_min = 0.0f, sum_half_slope = 0.0f, sum_dist = 0.0f;
+  for (int i = 0; i < n; ++i) {
+    const float s = legRampSlope(legs[i]);
+    const float v_tri = legTriangleVel(legs[i], s);
+    if (v_tri > v_hi) v_hi = v_tri;
+    t_min          += s * v_tri;
+    sum_half_slope += 0.5f * s;
+    sum_dist       += std::fabs(legs[i].dist);
+  }
+
+  if (!(time > t_min)) {  // also catches NaN
+    for (int i = 0; i < n; ++i) {
+      out[i] = fromAccelDecel(legs[i].dist, legTriangleVel(legs[i], legRampSlope(legs[i])),
+                              legs[i].accel, legs[i].decel);
+    }
+    return false;
+  }
+
+  // Closed form, assuming every leg cruises: sum(v*s/2 + D/v) == time is a
+  // quadratic in v. Written as 2*sum_dist/(time+sqrt(disc)) rather than
+  // (time-sqrt(disc))/(2*sum_half_slope) for the same reason fromTimeAccelDecel
+  // is -- the subtraction cancels catastrophically for a generous budget.
+  const float disc = time * time - 4.0f * sum_half_slope * sum_dist;
+  float v = (disc >= 0.0f) ? 2.0f * sum_dist / (time + std::sqrt(disc)) : v_hi;
+
+  bool saturated = !finitePos(v);
+  for (int i = 0; i < n && !saturated; ++i) {
+    if (v >= legTriangleVel(legs[i], legRampSlope(legs[i]))) saturated = true;
+  }
+
+  if (saturated) {
+    // At least one leg is pinned triangular, so the quadratic was solving a
+    // total that leg never contributes to. Bisect the true total instead: every
+    // term is decreasing or flat in v, so the sum is monotone non-increasing
+    // and the root is unique -- no local minima to trap a bracketing search.
+    float lo = sum_dist / time;  // the speed if the ramps took no time at all
+    for (int g = 0; g < 8; ++g) {
+      float t = 0.0f;
+      for (int i = 0; i < n; ++i) t += legDuration(legs[i], lo);
+      if (t >= time) break;      // lo is genuinely below the root
+      lo *= 0.5f;                // a very short leg saturated even down here
+    }
+    float hi = v_hi;
+    for (int it = 0; it < 40; ++it) {
+      const float mid = 0.5f * (lo + hi);
+      float t = 0.0f;
+      for (int i = 0; i < n; ++i) t += legDuration(legs[i], mid);
+      if (t > time) lo = mid; else hi = mid;
+    }
+    v = 0.5f * (lo + hi);
+  }
+
+  for (int i = 0; i < n; ++i) {
+    // A saturated leg gets a v it cannot reach; fromAccelDecel() clamps it to
+    // the triangle on its own, which is the same duration legDuration() used.
+    out[i] = fromAccelDecel(legs[i].dist, v, legs[i].accel, legs[i].decel);
+  }
+  return true;
+}
+
 Profile Profile::scaleDistance(float k) const {
   Profile p;
   if (!valid() || !std::isfinite(k) || k == 0.0f) return p;

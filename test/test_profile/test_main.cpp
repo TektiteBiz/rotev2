@@ -444,6 +444,154 @@ void test_degenerate_asymmetric_inputs_return_empty_profiles() {
   }
 }
 
+// --- multi-leg scheduling ---------------------------------------------------
+
+static float legsTotal(const Profile* p, int n) {
+  float t = 0.0f;
+  for (int i = 0; i < n; ++i) t += p[i].duration();
+  return t;
+}
+
+void test_from_legs_hits_the_budget_with_no_leg_saturated() {
+  // Long legs at generous rates: every one cruises, so the closed form is exact.
+  const Leg legs[] = {{30.0f, 5.0f, 5.0f}, {70.0f, 5.0f, 20.0f}, {50.0f, 10.0f, 10.0f}};
+  Profile out[3];
+  TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, 40.0f, out));
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 40.0f, legsTotal(out, 3));
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_TRUE(out[i].valid());
+    TEST_ASSERT_FLOAT_WITHIN(std::fabs(legs[i].dist) * 1e-3f, legs[i].dist, out[i].distance());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, legs[i].accel, out[i].maxAccel());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, legs[i].decel, out[i].maxDecel());
+    TEST_ASSERT_TRUE(out[i].cruiseTime() > 0.0f);           // nothing saturated
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, out[0].maxVelocity(), out[i].maxVelocity());
+  }
+}
+
+void test_from_legs_absorbs_a_saturated_leg() {
+  // The 0.5 rad leg is too short to reach the shared cruise speed (its ramps
+  // meet at 1.13 rad/s, below the 1.35 the other two settle on), so it pins
+  // triangular and they must stretch to hold the total. This is the case the
+  // naive quadratic gets wrong -- it credits this leg with time it never spends
+  // and the sequence lands a few ms short.
+  const Leg legs[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}, {0.5f, 1.75f, 4.78f}};
+  Profile out[3];
+  TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, 9.9f, out));
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 9.9f, legsTotal(out, 3));
+  for (int i = 0; i < 3; ++i)
+    TEST_ASSERT_FLOAT_WITHIN(std::fabs(legs[i].dist) * 1e-3f, legs[i].dist, out[i].distance());
+  TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, out[2].cruiseTime());        // pinned triangular
+  TEST_ASSERT_TRUE(out[2].maxVelocity() < out[1].maxVelocity());    // below the shared speed
+  TEST_ASSERT_TRUE(out[0].cruiseTime() > 0.0f);
+  TEST_ASSERT_TRUE(out[1].cruiseTime() > 0.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, out[0].maxVelocity(), out[1].maxVelocity());
+}
+
+void test_from_legs_absorbs_a_saturating_first_leg() {
+  // A 0.05 rad leg saturates even at the lower bracket, exercising the halving
+  // loop that walks `lo` down until it is genuinely below the root.
+  const Leg legs[] = {{0.05f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}, {3.0f, 1.75f, 4.78f}};
+  Profile out[3];
+  TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, 9.9f, out));
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 9.9f, legsTotal(out, 3));
+  TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, out[0].cruiseTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.05f, out[0].distance());
+}
+
+void test_from_legs_holds_the_budget_across_a_sweep() {
+  // t_min for this set is 7.74 s, so every budget below is reachable.
+  const Leg legs[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}, {0.5f, 1.75f, 4.78f}};
+  const float T[] = {8.0f, 9.9f, 15.0f, 60.0f, 600.0f};
+  for (int k = 0; k < 5; ++k) {
+    Profile out[3];
+    TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, T[k], out));
+    TEST_ASSERT_FLOAT_WITHIN(T[k] * 1e-3f, T[k], legsTotal(out, 3));
+    for (int i = 0; i < 3; ++i) {
+      TEST_ASSERT_TRUE(out[i].valid());
+      TEST_ASSERT_FLOAT_WITHIN(std::fabs(legs[i].dist) * 1e-3f, legs[i].dist, out[i].distance());
+      TEST_ASSERT_TRUE(std::fabs(out[i].maxAccel()) <= legs[i].accel + 1e-3f);
+      TEST_ASSERT_TRUE(std::fabs(out[i].maxDecel()) <= legs[i].decel + 1e-3f);
+    }
+  }
+}
+
+void test_from_legs_total_is_monotone_in_the_budget() {
+  // The solver inverts a monotone non-increasing T_total(v), so a longer budget
+  // can never come back with a faster sequence.
+  const Leg legs[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}, {0.5f, 1.75f, 4.78f}};
+  float prev_v = 1e30f;
+  for (float T = 8.0f; T <= 40.0f; T += 0.25f) {
+    Profile out[3];
+    TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, T, out));
+    const float v = out[1].maxVelocity();
+    TEST_ASSERT_TRUE(v <= prev_v + 1e-4f);
+    prev_v = v;
+  }
+}
+
+void test_from_legs_reports_an_impossible_budget_flat_out() {
+  const Leg legs[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}, {0.5f, 1.75f, 4.78f}};
+  Profile out[3];
+  TEST_ASSERT_FALSE(Profile::fromLegs(legs, 3, 5.0f, out));
+  // out[] still holds a runnable move: every leg triangular at its own limits.
+  float flat_out = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_TRUE(out[i].valid());
+    TEST_ASSERT_FLOAT_WITHIN(std::fabs(legs[i].dist) * 1e-3f, legs[i].dist, out[i].distance());
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, out[i].cruiseTime());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, legs[i].accel, out[i].maxAccel());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, legs[i].decel, out[i].maxDecel());
+    flat_out += out[i].duration();
+  }
+  TEST_ASSERT_TRUE(flat_out > 5.0f);
+  // and nothing shorter than that is achievable
+  Profile probe[3];
+  TEST_ASSERT_FALSE(Profile::fromLegs(legs, 3, flat_out * 0.999f, probe));
+  TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, flat_out * 1.01f, probe));
+}
+
+void test_from_legs_single_leg_matches_from_time_accel_decel() {
+  const Leg legs[] = {{100.0f, 10.0f, 40.0f}};
+  Profile out[1];
+  TEST_ASSERT_TRUE(Profile::fromLegs(legs, 1, 12.0f, out));
+  Profile ref = Profile::fromTimeAccelDecel(100.0f, 12.0f, 10.0f, 40.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, ref.maxVelocity(), out[0].maxVelocity());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 12.0f, out[0].duration());
+}
+
+void test_from_legs_handles_negative_and_mixed_directions() {
+  const Leg legs[] = {{3.0f, 1.75f, 4.78f}, {-7.0f, 1.0f, 1.75f}, {2.0f, 1.75f, 4.78f}};
+  Profile out[3];
+  TEST_ASSERT_TRUE(Profile::fromLegs(legs, 3, 12.0f, out));
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 12.0f, legsTotal(out, 3));
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 3.0f, out[0].distance());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, -7.0f, out[1].distance());
+  TEST_ASSERT_TRUE(out[1].maxVelocity() < 0.0f);
+  // the reversed leg cruises at the same speed, just the other way
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, out[0].maxVelocity(), -out[1].maxVelocity());
+}
+
+void test_from_legs_rejects_degenerate_input() {
+  const Leg ok[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}};
+  const Leg bad_dist[]  = {{3.0f, 1.75f, 4.78f}, {0.0f, 1.0f, 1.75f}};
+  const Leg bad_accel[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 0.0f, 1.75f}};
+  const Leg bad_decel[] = {{3.0f, 1.75f, 4.78f}, {7.0f, 1.0f, NAN}};
+  const Leg bad_inf[]   = {{INFINITY, 1.75f, 4.78f}, {7.0f, 1.0f, 1.75f}};
+  Profile out[2];
+
+  const Leg* bad[] = {bad_dist, bad_accel, bad_decel, bad_inf};
+  for (int k = 0; k < 4; ++k) {
+    TEST_ASSERT_FALSE(Profile::fromLegs(bad[k], 2, 20.0f, out));
+    for (int i = 0; i < 2; ++i) TEST_ASSERT_FALSE(out[i].valid());
+  }
+  TEST_ASSERT_FALSE(Profile::fromLegs(ok, 0, 20.0f, out));
+  TEST_ASSERT_FALSE(Profile::fromLegs(ok, -1, 20.0f, out));
+  TEST_ASSERT_FALSE(Profile::fromLegs(nullptr, 2, 20.0f, out));
+  TEST_ASSERT_FALSE(Profile::fromLegs(ok, 2, 20.0f, nullptr));
+  TEST_ASSERT_FALSE(Profile::fromLegs(ok, 2, NAN, out));
+  TEST_ASSERT_FALSE(Profile::fromLegs(ok, 2, -5.0f, out));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_default_profile_is_empty);
@@ -483,5 +631,14 @@ int main() {
   RUN_TEST(test_negative_distance_mirrors_an_asymmetric_move);
   RUN_TEST(test_scaling_preserves_the_accel_decel_ratio);
   RUN_TEST(test_degenerate_asymmetric_inputs_return_empty_profiles);
+  RUN_TEST(test_from_legs_hits_the_budget_with_no_leg_saturated);
+  RUN_TEST(test_from_legs_absorbs_a_saturated_leg);
+  RUN_TEST(test_from_legs_absorbs_a_saturating_first_leg);
+  RUN_TEST(test_from_legs_holds_the_budget_across_a_sweep);
+  RUN_TEST(test_from_legs_total_is_monotone_in_the_budget);
+  RUN_TEST(test_from_legs_reports_an_impossible_budget_flat_out);
+  RUN_TEST(test_from_legs_single_leg_matches_from_time_accel_decel);
+  RUN_TEST(test_from_legs_handles_negative_and_mixed_directions);
+  RUN_TEST(test_from_legs_rejects_degenerate_input);
   return UNITY_END();
 }

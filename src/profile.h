@@ -11,6 +11,15 @@ struct ProfileState {
   bool  done; // t >= duration()
 };
 
+// One leg of a multi-leg move, in wheel radians. A sequence of these is handed
+// to Profile::fromLegs(), which solves for the single cruise velocity that
+// makes the whole sequence take a requested amount of time.
+struct Leg {
+  float dist;   // signed, rad
+  float accel;  // magnitude, rad/s^2
+  float decel;  // magnitude, rad/s^2
+};
+
 // Trapezoidal velocity move: constant acceleration up to the cruise speed,
 // constant speed, then constant deceleration back to rest. Position is the
 // integral of that, so it traces the S shape.
@@ -39,6 +48,20 @@ class Profile {
                                 float max_decel);
   static Profile fromTimeAccelDecel(float distance, float time, float max_accel,
                                     float max_decel);
+
+  // Fills out[0..n) with the profiles that cover `legs` back to back in exactly
+  // `time` seconds, every one of them cruising at the same velocity so the
+  // sequence reads as one continuous move rather than n unrelated ones. Each
+  // leg keeps its own accel and decel; a leg too short to reach the shared
+  // cruise velocity degenerates to a triangle and simply takes what time it
+  // takes, with the rest of the sequence slowed to absorb the difference.
+  //
+  // Returns false if `time` is below the flat-out total (every leg triangular
+  // at its own limits), in which case out[] holds that flat-out move -- still
+  // runnable, just slower than asked for. `legs` and `out` are caller-owned
+  // arrays of at least n entries; nothing is allocated. Degenerate inputs
+  // leave every out[] entry empty and return false.
+  static bool fromLegs(const Leg* legs, int n, float time, Profile* out);
 
   // Vertical stretch: same durations, distance/velocity/accel/decel all scale
   // by k, so the accel:decel ratio is preserved.

@@ -5,6 +5,7 @@
 # Types (KEYWORD1)
 Profile	KEYWORD1
 ProfileState	KEYWORD1
+Leg	KEYWORD1
 Motor	KEYWORD1
 Button	KEYWORD1
 AdcChannel	KEYWORD1
@@ -27,6 +28,7 @@ fromVelAccel	KEYWORD2
 fromTimeAccel	KEYWORD2
 fromAccelDecel	KEYWORD2
 fromTimeAccelDecel	KEYWORD2
+fromLegs	KEYWORD2
 scaleDistance	KEYWORD2
 scaleTime	KEYWORD2
 distance	KEYWORD2
