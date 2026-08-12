@@ -76,6 +76,8 @@ arguments are magnitudes.
 Profile();                                                        // empty, valid() == false
 static Profile fromVelAccel(float distance, float max_vel, float max_accel);
 static Profile fromTimeAccel(float distance, float time, float max_accel);
+static Profile fromAccelDecel(float distance, float max_vel, float max_accel, float max_decel);
+static Profile fromTimeAccelDecel(float distance, float time, float max_accel, float max_decel);
 Profile scaleDistance(float k) const;
 Profile scaleTime(float k) const;
 ```
@@ -96,16 +98,32 @@ Profile scaleTime(float k) const;
   Profile p = Profile::fromTimeAccel(100.0f, 2.0f, 200.0f);   // exactly 2 s
   ```
 
+- **`fromAccelDecel(distance, max_vel, max_accel, max_decel)`** — the asymmetric complement to
+  `fromVelAccel`: the ramp up runs at `max_accel` and the ramp down at `max_decel`. Useful when the
+  axis can brake harder than it can drive (or the reverse). Passing the same rate twice reproduces
+  `fromVelAccel` exactly.
+
+  ```cpp
+  Profile p = Profile::fromAccelDecel(100.0f, 100.0f, 100.0f, 400.0f);  // gentle start, hard stop
+  ```
+
+- **`fromTimeAccelDecel(distance, time, max_accel, max_decel)`** — the asymmetric complement to
+  `fromTimeAccel`, with the same "too short a time gives you the fastest move instead" fallback.
+
+  ```cpp
+  Profile p = Profile::fromTimeAccelDecel(100.0f, 2.0f, 100.0f, 400.0f);
+  ```
+
 - **`scaleDistance(k)`** — vertical stretch of an existing profile. Same durations; distance,
-  velocity and acceleration all scale by `k`. A negative `k` reverses the move, which is how you
-  build a return leg:
+  velocity, acceleration and deceleration all scale by `k`, so an asymmetric profile keeps its
+  accel:decel ratio. A negative `k` reverses the move, which is how you build a return leg:
 
   ```cpp
   Profile back = p.scaleDistance(-1.0f);  // same envelope, opposite direction
   ```
 
 - **`scaleTime(k)`** — horizontal stretch. Same distance; every duration scales by `k`, so
-  velocity scales by `1/k` and acceleration by `1/k²`. `k` must be positive.
+  velocity scales by `1/k` and both acceleration and deceleration by `1/k²`. `k` must be positive.
 
   ```cpp
   Profile gentle = p.scaleTime(2.0f);  // same move, twice as long, quarter the accel
@@ -122,15 +140,19 @@ float distance()    const;  // signed, radians
 float duration()    const;  // seconds, accel + cruise + decel
 float maxVelocity() const;  // signed peak (cruise) velocity, rad/s
 float maxAccel()    const;  // signed peak acceleration, rad/s^2
+float maxDecel()    const;  // signed peak deceleration magnitude, rad/s^2
 float accelTime()   const;  // seconds
 float cruiseTime()  const;  // seconds, 0 for a triangular profile
-float decelTime()   const;  // seconds, always == accelTime()
+float decelTime()   const;  // seconds, == accelTime() only for a symmetric profile
+bool  symmetric()   const;  // true when the two ramps take the same time
 bool  valid()       const;  // false for an empty/degenerate profile
 ```
 
-`maxVelocity()` and `maxAccel()` carry the sign of the move, so they are the *actual* peak values
-reached, not the magnitudes you passed in — for a triangular profile `maxVelocity()` is below the
-`max_vel` you asked for.
+`maxVelocity()`, `maxAccel()` and `maxDecel()` carry the sign of the move, so they are the *actual*
+peak values reached, not the magnitudes you passed in — for a triangular profile `maxVelocity()` is
+below the `max_vel` you asked for. `maxDecel()` is a magnitude in the sense that the acceleration
+actually reported during the ramp down is its negative: a profile decelerating at 400 rad/s² reads
+`maxDecel() == 400` and `at(t).acc == -400` there.
 
 ### Sampling
 
@@ -154,18 +176,36 @@ past the end returns the final position with zero velocity and `done == true`.
 
 ```cpp
 void print() const;
+void printWithUnits(float wheel_radius, const char* unit) const;
 ```
 
-Dumps the profile to `Serial` in a readable block:
+`print()` dumps the profile to `Serial` in a readable block, in radians:
 
 ```
 Profile: 100.000 rad in 1.500 s
-  peak vel   100.000 rad/s (954.9 rpm)
-  peak accel 200.000 rad/s^2
+  peak vel   100.000 rad/s (954.9 rpm) held 0.500 s
+  peak accel 200.000 rad/s^2   peak decel 200.000 rad/s^2
   accel      0.500 s   cruise 0.500 s   decel 0.500 s
 ```
 
-An empty profile prints `Profile: <empty>`.
+"held" is the time spent at peak velocity — the cruise time, `0.000` for a triangular profile.
+
+`printWithUnits(wheel_radius, unit)` prints the same block converted to linear units, multiplying
+every radian by `wheel_radius` and labelling it `unit`. The rpm figure is radius-independent and
+stays. For a 16 mm wheel:
+
+```cpp
+p.printWithUnits(0.016f, "m");
+```
+
+```
+Profile: 1.600 m in 1.500 s
+  peak vel   1.600 m/s (954.9 rpm) held 0.500 s
+  peak accel 3.200 m/s^2   peak decel 3.200 m/s^2
+  accel      0.500 s   cruise 0.500 s   decel 0.500 s
+```
+
+An empty profile prints `Profile: <empty>` either way.
 
 ---
 

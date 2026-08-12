@@ -25,18 +25,23 @@ busVoltage	KEYWORD2
 # Profile methods (KEYWORD2)
 fromVelAccel	KEYWORD2
 fromTimeAccel	KEYWORD2
+fromAccelDecel	KEYWORD2
+fromTimeAccelDecel	KEYWORD2
 scaleDistance	KEYWORD2
 scaleTime	KEYWORD2
 distance	KEYWORD2
 duration	KEYWORD2
 maxVelocity	KEYWORD2
 maxAccel	KEYWORD2
+maxDecel	KEYWORD2
 accelTime	KEYWORD2
 cruiseTime	KEYWORD2
 decelTime	KEYWORD2
+symmetric	KEYWORD2
 valid	KEYWORD2
 at	KEYWORD2
 print	KEYWORD2
+printWithUnits	KEYWORD2
 
 # Constants / enum values (LITERAL1)
 MOTOR_1	LITERAL1

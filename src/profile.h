@@ -14,11 +14,12 @@ struct ProfileState {
 // Trapezoidal velocity move: constant acceleration up to the cruise speed,
 // constant speed, then constant deceleration back to rest. Position is the
 // integral of that, so it traces the S shape.
-//   accel  (0 <= t < ta):      v = a*t,  a = vpk/ta
-//   cruise (ta <= t < ta+tc):  v = vpk
-//   decel  (last ta seconds):  v ramps back to 0 at -a
-// A move that cannot reach vpk before it has to start stopping degenerates to
-// a triangle (tc == 0) at the same acceleration.
+//   accel  (0 <= t < ta):        v = a*t,  a = vpk/ta
+//   cruise (ta <= t < ta+tc):    v = vpk
+//   decel  (last td seconds):    v ramps back to 0 at -d,  d = vpk/td
+// The ramps may be asymmetric (a != d); the symmetric factories just pass the
+// same rate twice, giving td == ta. A move that cannot reach vpk before it has
+// to start stopping degenerates to a triangle (tc == 0) at the same rates.
 class Profile {
  public:
   Profile();  // empty: zero distance, zero duration, valid() == false
@@ -31,10 +32,19 @@ class Profile {
   // max_accel is returned instead (duration() is then > time).
   static Profile fromTimeAccel(float distance, float time, float max_accel);
 
-  // Vertical stretch: same durations, distance/velocity/accel all scale by k.
+  // Asymmetric complements to the two above: the ramp up runs at max_accel and
+  // the ramp down at max_decel. Passing the same rate twice reproduces the
+  // symmetric factory exactly.
+  static Profile fromAccelDecel(float distance, float max_vel, float max_accel,
+                                float max_decel);
+  static Profile fromTimeAccelDecel(float distance, float time, float max_accel,
+                                    float max_decel);
+
+  // Vertical stretch: same durations, distance/velocity/accel/decel all scale
+  // by k, so the accel:decel ratio is preserved.
   Profile scaleDistance(float k) const;
-  // Horizontal stretch: same distance, every duration scales by k, so
-  // velocity scales by 1/k and acceleration by 1/k^2.
+  // Horizontal stretch: same distance, every duration scales by k, so velocity
+  // scales by 1/k and both accel and decel by 1/k^2.
   Profile scaleTime(float k) const;
 
   // These are defined inline, not in profile.cpp, on purpose: at() is called
@@ -43,14 +53,19 @@ class Profile {
   // would reintroduce exactly that stall, and inside the setpoint spinlock at
   // that. Inlining puts the arithmetic in the caller's RAM-resident code, and
   // trapezoidal segments need no transcendentals to get there.
-  float distance()   const { return vpk_ * (ta_ + tc_); }        // signed, rad
-  float duration()   const { return 2.0f * ta_ + tc_; }          // seconds
+  // signed, rad: half a ramp each side plus the full cruise
+  float distance()   const { return vpk_ * (0.5f * (ta_ + td_) + tc_); }
+  float duration()   const { return ta_ + tc_ + td_; }           // seconds
   float maxVelocity()const { return vpk_; }                      // signed, rad/s
   float maxAccel()   const { return ta_ > 0.0f ? vpk_ / ta_ : 0.0f; }
+  // Signed like maxAccel(): the magnitude of the ramp down, whose actual
+  // acceleration during the move is the negative of this.
+  float maxDecel()   const { return td_ > 0.0f ? vpk_ / td_ : 0.0f; }
   float accelTime()  const { return ta_; }                       // seconds
   float cruiseTime() const { return tc_; }  // 0 for a triangular profile
-  float decelTime()  const { return ta_; }  // == accelTime()
-  bool  valid()      const { return ta_ > 0.0f && vpk_ != 0.0f; }
+  float decelTime()  const { return td_; }  // == accelTime() only if symmetric
+  bool  symmetric()  const { return ta_ == td_; }
+  bool  valid()      const { return ta_ > 0.0f && td_ > 0.0f && vpk_ != 0.0f; }
 
   // State at time t, clamped to [0, duration()].
   //
@@ -69,8 +84,9 @@ class Profile {
     if (t > T) t = T;
     st.t = t;
 
-    const float a = vpk_ / ta_;              // signed ramp acceleration
-    const float x_ramp = 0.5f * vpk_ * ta_;  // distance covered by one ramp
+    const float a = vpk_ / ta_;              // signed ramp-up acceleration
+    const float d = vpk_ / td_;              // signed ramp-down magnitude
+    const float x_up = 0.5f * vpk_ * ta_;    // distance covered by the ramp up
     if (t >= T) {
       st.pos = distance();
     } else if (t < ta_) {
@@ -79,23 +95,30 @@ class Profile {
       st.acc  = a;
       st.done = false;
     } else if (t < ta_ + tc_) {
-      st.pos  = x_ramp + vpk_ * (t - ta_);
+      st.pos  = x_up + vpk_ * (t - ta_);
       st.vel  = vpk_;
       st.done = false;
     } else {
       const float u = t - ta_ - tc_;
-      st.vel  = vpk_ - a * u;
-      st.pos  = x_ramp + vpk_ * tc_ + vpk_ * u - 0.5f * a * u * u;
-      st.acc  = -a;
+      st.vel  = vpk_ - d * u;
+      st.pos  = x_up + vpk_ * tc_ + vpk_ * u - 0.5f * d * u * u;
+      st.acc  = -d;
       st.done = false;
     }
     return st;
   }
 
-  void print() const;  // human-readable dump to Serial
+  void print() const;  // human-readable dump to Serial, in rad
+
+  // Same dump in linear units: every rad is multiplied by `wheel_radius` and
+  // labelled `unit` (e.g. printWithUnits(0.016f, "m") for a 16 mm wheel).
+  void printWithUnits(float wheel_radius, const char* unit) const;
 
  private:
-  float vpk_, ta_, tc_;  // signed peak velocity, ramp time, cruise time
+  void printDump(float scale, const char* unit) const;
+
+  // signed peak velocity, ramp-up time, cruise time, ramp-down time
+  float vpk_, ta_, tc_, td_;
 };
 
 }  // namespace rotev

@@ -37,7 +37,9 @@ void test_triangular_branch_never_reaches_max_vel() {
 
 void test_accessors_are_self_consistent() {
   Profile p = Profile::fromVelAccel(250.0f, 20.0f, 8.0f);
+  TEST_ASSERT_TRUE(p.symmetric());
   TEST_ASSERT_FLOAT_WITHIN(1e-5, p.accelTime(), p.decelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, p.maxAccel(), p.maxDecel());
   TEST_ASSERT_FLOAT_WITHIN(1e-4, 2.0f * p.accelTime() + p.cruiseTime(), p.duration());
   TEST_ASSERT_FLOAT_WITHIN(1e-2, p.maxVelocity() * (p.accelTime() + p.cruiseTime()), p.distance());
   TEST_ASSERT_FLOAT_WITHIN(1e-4, p.maxVelocity() / p.accelTime(), p.maxAccel());
@@ -275,6 +277,173 @@ void test_scaling_an_empty_profile_stays_empty() {
   TEST_ASSERT_FALSE(Profile::fromVelAccel(100.0f, 10.0f, 4.0f).scaleDistance(0.0f).valid());
 }
 
+// --- asymmetric ramps -------------------------------------------------------
+
+void test_accel_decel_trapezoid_honours_both_rates() {
+  // ramps cover V^2/2*(1/A+1/D) = 100/2*(1/5+1/20) = 12.5 rad, well under 500.
+  Profile p = Profile::fromAccelDecel(500.0f, 10.0f, 5.0f, 20.0f);
+  TEST_ASSERT_TRUE(p.valid());
+  TEST_ASSERT_FALSE(p.symmetric());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 10.0f, p.maxVelocity());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 5.0f, p.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 20.0f, p.maxDecel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 10.0f / 5.0f, p.accelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 10.0f / 20.0f, p.decelTime());
+  TEST_ASSERT_TRUE(p.cruiseTime() > 0.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 500.0f, p.distance());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, p.accelTime() + p.cruiseTime() + p.decelTime(),
+                           p.duration());
+}
+
+void test_accel_decel_triangle_splits_by_rate_ratio() {
+  // 1 rad is far too short to reach 100 rad/s: k*vpk^2 == D with k = (1/2+1/8)/2.
+  const float k = 0.5f * (1.0f / 2.0f + 1.0f / 8.0f);
+  Profile p = Profile::fromAccelDecel(1.0f, 100.0f, 2.0f, 8.0f);
+  TEST_ASSERT_TRUE(p.valid());
+  TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, p.cruiseTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, std::sqrt(1.0f / k), p.maxVelocity());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 2.0f, p.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 8.0f, p.maxDecel());
+  // the harder ramp takes a quarter the time of the gentler one
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, p.accelTime() / 4.0f, p.decelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1.0f, p.distance());
+}
+
+void test_accel_decel_equal_rates_match_the_symmetric_factory() {
+  const float D[] = {1000.0f, 1.0f, -250.0f};
+  for (int i = 0; i < 3; ++i) {
+    Profile a = Profile::fromVelAccel(D[i], 10.0f, 5.0f);
+    Profile b = Profile::fromAccelDecel(D[i], 10.0f, 5.0f, 5.0f);
+    TEST_ASSERT_TRUE(b.valid());
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, a.maxVelocity(), b.maxVelocity());
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, a.accelTime(), b.accelTime());
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, a.cruiseTime(), b.cruiseTime());
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, a.decelTime(), b.decelTime());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, a.distance(), b.distance());
+  }
+}
+
+void test_accel_decel_at_matches_the_two_ramp_rates() {
+  Profile p = Profile::fromAccelDecel(500.0f, 10.0f, 5.0f, 20.0f);
+  ProfileState up = p.at(0.5f * p.accelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 5.0f, up.acc);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 0.5f * p.maxVelocity(), up.vel);
+  ProfileState cruise = p.at(p.accelTime() + 0.5f * p.cruiseTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 10.0f, cruise.vel);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, cruise.acc);
+  ProfileState down = p.at(p.accelTime() + p.cruiseTime() + 0.5f * p.decelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, -20.0f, down.acc);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 0.5f * p.maxVelocity(), down.vel);
+  ProfileState end = p.at(p.duration());
+  TEST_ASSERT_TRUE(end.done);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, end.vel);
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 500.0f, end.pos);
+}
+
+void test_integrated_velocity_matches_distance_asymmetric() {
+  // trapezoid and triangle, both with a 4:1 rate split
+  const Profile ps[] = {Profile::fromAccelDecel(500.0f, 10.0f, 5.0f, 20.0f),
+                        Profile::fromAccelDecel(1.0f, 100.0f, 2.0f, 8.0f)};
+  for (const Profile& p : ps) {
+    const int N = 20000;
+    const float dt = p.duration() / N;
+    float x = 0.0f;
+    for (int i = 0; i < N; ++i) x += p.at((i + 0.5f) * dt).vel * dt;
+    TEST_ASSERT_FLOAT_WITHIN(std::fabs(p.distance()) * 1e-3f, p.distance(), x);
+  }
+}
+
+void test_time_accel_decel_reproduces_requested_duration() {
+  // Tmin at these rates is 2*sqrt(k*D) with k = (1/10+1/40)/2 = 0.0625, so
+  // Tmin = 5 s for D = 100: 12 s is comfortably reachable.
+  Profile p = Profile::fromTimeAccelDecel(100.0f, 12.0f, 10.0f, 40.0f);
+  TEST_ASSERT_TRUE(p.valid());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 12.0f, p.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 100.0f, p.distance());
+  TEST_ASSERT_TRUE(p.cruiseTime() > 0.0f);
+  TEST_ASSERT_TRUE(std::fabs(p.maxAccel()) <= 10.0f + 1e-3f);
+  TEST_ASSERT_TRUE(std::fabs(p.maxDecel()) <= 40.0f + 1e-3f);
+}
+
+void test_time_accel_decel_falls_back_when_time_unreachable() {
+  const float k = 0.5f * (1.0f / 10.0f + 1.0f / 40.0f);
+  Profile p = Profile::fromTimeAccelDecel(100.0f, 1.0f, 10.0f, 40.0f);
+  TEST_ASSERT_TRUE(p.valid());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 2.0f * std::sqrt(k * 100.0f), p.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, p.cruiseTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 100.0f, p.distance());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 10.0f, p.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 40.0f, p.maxDecel());
+}
+
+void test_time_accel_decel_equal_rates_match_the_symmetric_factory() {
+  Profile a = Profile::fromTimeAccel(100.0f, 12.0f, 10.0f);
+  Profile b = Profile::fromTimeAccelDecel(100.0f, 12.0f, 10.0f, 10.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, a.maxVelocity(), b.maxVelocity());
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, a.duration(), b.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, a.distance(), b.distance());
+}
+
+void test_time_accel_decel_survives_time_far_above_minimum() {
+  Profile p = Profile::fromTimeAccelDecel(0.1f, 300.0f, 100.0f, 25.0f);
+  TEST_ASSERT_TRUE(p.valid());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, 300.0f, p.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.1f, p.distance());
+  TEST_ASSERT_TRUE(p.cruiseTime() > 0.0f);
+}
+
+void test_negative_distance_mirrors_an_asymmetric_move() {
+  Profile f = Profile::fromAccelDecel(500.0f, 10.0f, 5.0f, 20.0f);
+  Profile r = Profile::fromAccelDecel(-500.0f, 10.0f, 5.0f, 20.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, f.duration(), r.duration());
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, f.accelTime(), r.accelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, f.decelTime(), r.decelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, -f.distance(), r.distance());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, -f.maxVelocity(), r.maxVelocity());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, -f.maxAccel(), r.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, -f.maxDecel(), r.maxDecel());
+}
+
+void test_scaling_preserves_the_accel_decel_ratio() {
+  Profile p = Profile::fromAccelDecel(500.0f, 10.0f, 5.0f, 20.0f);
+  const float ratio = p.maxDecel() / p.maxAccel();
+
+  Profile d = p.scaleDistance(2.5f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, p.decelTime(), d.decelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 2.5f * p.maxAccel(), d.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, 2.5f * p.maxDecel(), d.maxDecel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, ratio, d.maxDecel() / d.maxAccel());
+
+  Profile t = p.scaleTime(2.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 2.0f * p.decelTime(), t.decelTime());
+  TEST_ASSERT_FLOAT_WITHIN(1e-2, p.distance(), t.distance());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, p.maxAccel() / 4.0f, t.maxAccel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-3, p.maxDecel() / 4.0f, t.maxDecel());
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, ratio, t.maxDecel() / t.maxAccel());
+}
+
+void test_degenerate_asymmetric_inputs_return_empty_profiles() {
+  const Profile bad[] = {
+    Profile::fromAccelDecel(100.0f, 10.0f, 4.0f, 0.0f),
+    Profile::fromAccelDecel(100.0f, 10.0f, 0.0f, 4.0f),
+    Profile::fromAccelDecel(100.0f, 10.0f, 4.0f, NAN),
+    Profile::fromAccelDecel(100.0f, 10.0f, 4.0f, INFINITY),
+    Profile::fromAccelDecel(0.0f, 10.0f, 4.0f, 8.0f),
+    Profile::fromTimeAccelDecel(100.0f, 12.0f, 10.0f, 0.0f),
+    Profile::fromTimeAccelDecel(100.0f, 12.0f, 10.0f, NAN),
+    Profile::fromTimeAccelDecel(100.0f, -3.0f, 10.0f, 40.0f),
+  };
+  for (const Profile& p : bad) {
+    TEST_ASSERT_FALSE(p.valid());
+    TEST_ASSERT_FALSE(std::isnan(p.distance()));
+    TEST_ASSERT_FALSE(std::isnan(p.duration()));
+    TEST_ASSERT_FALSE(std::isnan(p.maxDecel()));
+    ProfileState s = p.at(1.0f);
+    TEST_ASSERT_TRUE(s.done);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, 0.0f, s.vel);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_default_profile_is_empty);
@@ -302,5 +471,17 @@ int main() {
   RUN_TEST(test_negative_distance_from_time_accel);
   RUN_TEST(test_degenerate_inputs_return_empty_profiles);
   RUN_TEST(test_scaling_an_empty_profile_stays_empty);
+  RUN_TEST(test_accel_decel_trapezoid_honours_both_rates);
+  RUN_TEST(test_accel_decel_triangle_splits_by_rate_ratio);
+  RUN_TEST(test_accel_decel_equal_rates_match_the_symmetric_factory);
+  RUN_TEST(test_accel_decel_at_matches_the_two_ramp_rates);
+  RUN_TEST(test_integrated_velocity_matches_distance_asymmetric);
+  RUN_TEST(test_time_accel_decel_reproduces_requested_duration);
+  RUN_TEST(test_time_accel_decel_falls_back_when_time_unreachable);
+  RUN_TEST(test_time_accel_decel_equal_rates_match_the_symmetric_factory);
+  RUN_TEST(test_time_accel_decel_survives_time_far_above_minimum);
+  RUN_TEST(test_negative_distance_mirrors_an_asymmetric_move);
+  RUN_TEST(test_scaling_preserves_the_accel_decel_ratio);
+  RUN_TEST(test_degenerate_asymmetric_inputs_return_empty_profiles);
   return UNITY_END();
 }
