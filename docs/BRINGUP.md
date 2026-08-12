@@ -75,10 +75,16 @@ the one or two knobs that govern it.
 
 ### 1.6 Behavior Caveat: motorEnable and the Stored Profile
 
-`motorEnable(m)` only releases nSLEEP and lets the axis drive current; it commands no motion of
-its own, so enabling a motor that has never been given a profile leaves it energised and still.
-The order of `motorEnable()` and `motorSetProfile()` therefore does not matter: a profile set on a
-disabled axis is stored and its clock only starts once the axis is enabled.
+`motorEnable(m)` releases nSLEEP and lets the axis drive current; it commands no *motion* of its
+own, but it does command a **hold**. An axis that has never been given a profile is energised at
+standstill and resists being turned by hand — expect the shaft to feel locked, and expect the
+first enable to snap the rotor into alignment with electrical angle 0, since with no position
+sensor the commanded angle starts at 0 regardless of where the shaft actually is. A free shaft
+after `motorEnable()` means the bridge is not driving; treat it as a fault, not as normal idle.
+
+The order of `motorEnable()` and `motorSetProfile()` does not matter: a profile set on a disabled
+axis is stored and its clock only starts once the axis is enabled, and a profile set on an axis
+already holding replaces the hold.
 
 Profiles are **relative** — the distance is measured from wherever the axis is when
 `motorSetProfile()` is called, and the profile clock restarts at 0. Issuing a new profile mid-move
@@ -113,8 +119,10 @@ cd bringup && pio run -e phase1 -t upload && pio device monitor
 
 Open the Arduino Serial Plotter. Five traces appear — `motorCurrentA(MOTOR_1)`,
 `motorCurrentB(MOTOR_1)`, `motorCurrentA(MOTOR_2)`, `motorCurrentB(MOTOR_2)`, and
-`busVoltage()` — printed at 50 ms intervals. Because no current command is applied, all four
-current traces should hover near 0 A, with only the small ADC offset bias visible (the INA181A2
+`busVoltage()` — printed at 50 ms intervals. Because the sketch commands 0 V explicitly after
+enabling (`motorEnable()` would otherwise hold position at `MOTOR_AMPS`, which this phase must not
+do with the loop still unverified), all four current traces should hover near 0 A, with only the
+small ADC offset bias visible (the INA181A2
 reference is 1.65 V; the ADC reads this as 0 A). With the motor unpowered the traces may wander by
 a few milliamps due to common-mode and thermal noise; this is normal. `busVoltage()` should read
 close to the actual 12 V rail (measure with a multimeter and compare).

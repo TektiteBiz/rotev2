@@ -272,8 +272,13 @@ Profile      motorProfile(Motor m);
 ProfileState motorProgress(Motor m);
 ```
 
-- **`motorEnable(m)`** — releases the driver's nSLEEP and lets the axis drive current.
-  `motorEnable(m, false)` zeroes the current and puts the driver back to sleep.
+- **`motorEnable(m)`** — releases the driver's nSLEEP and lets the axis drive current. The axis
+  then **holds position** even if it has never been given a profile: it is energised at standstill
+  and resists being turned by hand, drawing the same `MOTOR_AMPS` a finished move holds at. There
+  is no position sensor, so "position" means the commanded angle, which is 0 at boot — the first
+  enable therefore pulls the rotor into alignment with electrical angle 0 rather than holding
+  wherever it physically sits. `motorEnable(m, false)` zeroes the current and puts the driver back
+  to sleep, leaving the shaft free.
 - **`motorSetProfile(m, p)`** — starts `p` immediately, from wherever the axis currently is.
   Profiles are **relative**: the distance is measured from the position at the moment you call
   this, and the profile clock restarts at 0. Calling it again mid-move abandons the old profile

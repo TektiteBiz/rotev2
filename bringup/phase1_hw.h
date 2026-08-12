@@ -21,8 +21,14 @@ static void playGoTune() {
 void setup() {
   Serial.begin(115200);
   begin();
-  motorEnable(MOTOR_1);  // nSLEEP high; no motion commanded
+  motorEnable(MOTOR_1);  // nSLEEP high
   motorEnable(MOTOR_2);
+  // motorEnable() now holds position, which would drive MOTOR_AMPS through
+  // both axes -- exactly what this phase must NOT do, since it exists to read
+  // the current-sense offsets with the bridge idle and the loop unverified.
+  // Commanding 0 V leaves the drivers awake with no differential voltage.
+  motorSetVoltage(MOTOR_1, 0.0f, 0.0f);
+  motorSetVoltage(MOTOR_2, 0.0f, 0.0f);
 }
 
 void loop() {

@@ -274,6 +274,21 @@ void focStart() {
 void focEnable(Motor m, bool enable) {
   uint32_t irq = spin_lock_blocking(s_lock);
   s_sp[m].enabled = enable;
+  // An axis that has never been given a profile is still MODE_OFF, which the
+  // ISR treats as "zero both duties" -- enabling it would release nSLEEP and
+  // then leave the shaft free to be turned by hand. Promote it to a standstill
+  // hold instead: an empty profile evaluates to zero velocity for all t, so
+  // theta_mech never advances and the axis energises at its current commanded
+  // angle. That is the same path the ISR already takes once a move finishes,
+  // not a new mode. The first focSetProfile()/focSetVelocity()/focSetVoltage*()
+  // overwrites this, so a caller that enables before commanding is unaffected.
+  if (enable && s_sp[m].mode == MODE_OFF) {
+    s_sp[m].mode   = MODE_PROFILE;
+    s_sp[m].prof   = Profile();
+    s_sp[m].cruise = false;
+    s_sp[m].ticks  = 0;
+    s_sp[m].prog   = ProfileState{0.0f, 0.0f, 0.0f, 0.0f, true};
+  }
   // Disabling rewinds the profile clock instead of freezing it. There is no
   // position sensor, so the commanded angle IS the assumed rotor angle: the
   // bridge is about to be de-energised and the rotor will coast to rest, and
