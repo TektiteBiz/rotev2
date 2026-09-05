@@ -1,6 +1,6 @@
 {
   "name": "RotEv2",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dual-core stepper FOC for the Tektite RotEv2 (RP2354): build a motion profile on core0, core1 executes it. Radians and seconds.",
   "keywords": "foc, stepper, rp2350, rp2354, motor, control, motion-profile",
   "repository": { "type": "git", "url": "https://github.com/Nv7-Github/rotev2.git" },

@@ -67,5 +67,7 @@ float motorVoltageD(Motor m) { return focTelemetryU(m).d; }
 float motorVoltageQ(Motor m) { return focTelemetryU(m).q; }
 float motorDerateTrim(Motor m) { return focDerateTrim(m); }
 float motorCurrentCmd(Motor m) { return focCurrentCmd(m); }
+float motorLqEstimate(Motor m) { return focLqEstimate(m); }
+bool  motorFault(Motor m) { return focFault(m); }
 
 } // namespace rotev

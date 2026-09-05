@@ -94,27 +94,29 @@ constexpr float KI   = BANDWIDTH * PHASE_R;  // 4042
 // applied to a quadratic constraint, which stranded 11-15% of the bus above
 // the corner -- and was simultaneously too SMALL at the corner, surviving only
 // because of the quadrature addition.
-// NOTE the two R's. For the VOLTAGE budget the right R is the full series
-// PHASE_R (4.0417) -- winding + Rds(on) + shunt all drop volts. For the THERMAL
-// budget below it is the WINDING alone, since the driver's share heats the PCB.
 // The reserve is for uq, so it must be sized against the uq that actually
-// occurs -- and uq is NOT R*I. MEASURED on hardware above 400 RPM: uq mean
-// 4.83 V, max 7.29 V, against an R*I model value of 2.74 V. The model
-// understates by ~2 V because uq also carries we*lam*sin(gamma), the
-// load-angle term, which the no-load model omits entirely.
+// occurs -- and uq is NOT R*I. MEASURED above 300 RPM: uq median 5.73 V, p95
+// 7.46 V, max 7.93 V. The R*I model gives 2.74 V, understating by ~3 V because
+// uq also carries we*lam*sin(gamma), the load-angle term the no-load model
+// omits entirely.
 //
-//     UD_FRAC <= sqrt(k^2 - (uq/vbus)^2),  k = 0.95 for PI authority
-//   at 10.5 V:  R*I model -> 0.913   measured mean -> 0.831   max -> 0.648
+// The constraint is the BACKSTOP's, |u| > vbus, so k = 1.0 -- there is no
+// separate PI reserve, and an earlier version of this comment claiming k = 0.95
+// was wrong even though it happened to land on the same number:
+//     UD_FRAC <= sqrt(1 - (uq/vbus)^2)
+//        at median uq -> 0.834      at p95 uq -> 0.696      at max uq -> 0.646
 //
-// 0.83 is sized on the measured mean, leaving the trim to absorb excursions
-// toward the max. The earlier 0.88/0.91 were derived from the R*I model and
-// were therefore over-committed: on the validation run the backstop fired
-// often enough to hold the trim below 1.0 for 56% of the move.
+// 0.83 is sized on the MEDIAN. That is deliberate: the trim exists to absorb
+// the tail, and sizing on p95 would cost ~16% of the current everywhere to
+// pre-empt an excursion the trim already handles. Validated in flight -- the
+// backstop fires on 5.6% of fast ticks and the trim's MEDIAN is 0.989, i.e. it
+// is idle most of the time and dips on excursions. That is disturbance
+// rejection working, not a mis-sized feedforward.
 //
-// A fixed fraction is still the wrong shape here -- the right budget is
-// sqrt((k*vbus)^2 - uq^2) using the MEASURED uq from the previous tick, which
-// needs no constant at all. Left as future work: it closes a loop through the
-// load angle and wants bench time before it ships.
+// A scalar is still the wrong shape: the exact budget is
+// sqrt(vbus^2 - uq_prev^2) using the uq already published in s_telu. That
+// deletes this constant entirely and adapts to load angle and sag per tick.
+// Deferred because it closes a loop through the load angle and wants bench time.
 constexpr float UD_FRAC = 0.83f;    // of the bus that ud may consume
 constexpr float IQ_MIN = 0.05f;     // floor on the derated current command
 
@@ -124,18 +126,19 @@ constexpr float IQ_MIN = 0.05f;     // floor on the derated current command
 // datasheet allows R +-10%, L +-20%, and per-unit constants are not an option
 // on a fleet). The trim closes that gap by riding the ACTUAL voltage limit.
 //
-// Trigger: loss of d-axis regulation. The PI holds id at 0 until the bus runs
-// out; then the |u| backstop scales ud down, the d-axis loop cannot get the
-// voltage it asked for, and id drifts. That is what saturation looks like from
-// inside the loop, and it is independent of WHY the bus ran out.
+// Trigger: the |u| backstop firing. NOT |id| -- see foc.cpp, which rejects it
+// because |id| rises on loss of sync as well as on saturation.
 //
 // This is NOT the feedback derate rejected in PRD.md: that one scaled by
 // (ud_lim/|ud|), and piStep already clamps to +-vbus so the ratio could never
-// drop below UD_FRAC -- structurally blind. id has no such ceiling; the
-// further over budget you are, the larger the signal.
+// drop below UD_FRAC -- structurally blind. The backstop is a boolean with no
+// such ceiling.
 //
-// Hysteresis, not sluggishness, is what prevents limit-cycling -- so recovery
-// can be fast (~300 ms) instead of the seconds a plain integrator would need.
+// Hysteresis BOUNDS the limit cycle's amplitude; it does not remove it. A relay
+// with a dead band always cycles. Making the down-action proportional shrank
+// the amplitude enough that recovery can be fast (~300 ms) instead of the
+// seconds a plain integrator would need. Scope it on a real instrument before
+// trusting it -- a 20 Hz log cannot see the cycle.
 // A whole profile is 10-20 s, so a 2 s recovery would waste a fifth of a move.
 constexpr float TRIM_MIN       = 0.70f;  // trim only ever cuts, never boosts
 // PROPORTIONAL to how far over SAT_TRIP the duty is, not a fixed rate. With a
@@ -146,7 +149,7 @@ constexpr float TRIM_MIN       = 0.70f;  // trim only ever cuts, never boosts
 constexpr float TRIM_DOWN_RATE = 12.0f;  // /s at full saturation duty
 constexpr float TRIM_UP_RATE   = 1.0f;   // /s -- full band in ~300 ms
 constexpr float SAT_TRIP       = 0.10f;  // backstop duty above this -> cut
-constexpr float SAT_CLEAR      = 0.02f;  // and below this (AND id clear) -> recover
+constexpr float SAT_CLEAR      = 0.02f;  // and below this -> recover
 // 0.05 A matches ID_TOL, the off-zero threshold phase 5 already found workable.
 // It sits above the sense noise floor (~20-50 mA: 9.2 ENOB ADC + INA offset)
 // and above the ~1 ms cross-coupling kick the d-axis loop takes after a fast
@@ -157,12 +160,9 @@ constexpr float SAT_CLEAR      = 0.02f;  // and below this (AND id clear) -> rec
 // The s_lq estimator's own validity floor. Was sharing IQ_MIN, which silently
 // coupled it to the derate floor; they are unrelated quantities.
 constexpr float LQ_EST_MIN_IQ  = 0.05f;
-// The estimator's own backstop-duty ceiling. Numerically equal to SAT_CLEAR
-// today, but they are different questions -- "is it safe to learn from this
-// tick" vs "is it safe to give current back" -- and sharing a constant would
-// silently couple them, which is the exact failure mode UNJUSTIFIED_CONSTANTS.md
-// documents for IQ_MIN.
-constexpr float LQ_EST_MAX_SAT = 0.02f;
+// The estimator's algebra assumes id = 0; above this it is simply invalid.
+// See foc.cpp -- this is the gate that replaced two successive latches.
+constexpr float LQ_EST_MAX_ID  = 0.05f;
 constexpr float SAT_FILT_TAU_S = 0.010f; // 10 ms on backstop duty
 
 // --- Standstill hold ---
@@ -190,9 +190,20 @@ constexpr float MOTOR_HOLD_AMPS   = 0.4f;
 // during a handover. Requiring the axis to be done for HOLD_DWELL_S before
 // engaging means a new profile arriving promptly never sees the hold at all.
 constexpr float HOLD_DWELL_S = 0.25f;
+// Below this commanded cruise speed the axis counts as standstill for hold
+// purposes. 0.05 rad/s is 0.5 RPM -- slow enough that no real move is affected.
+constexpr float HOLD_VEL_RAD_S = 0.05f;
 // How long an invalid vbus reading may be papered over with VBUS_V before the
 // axis stops driving rather than guess at the rail.
 constexpr float VBUS_FAULT_S = 0.25f;
+// Upper sanity bound on a vbus reading. It must sit BELOW what the sensor can
+// represent, or it can never fire: the ADS1015 PGA is +-4.096 V and the divider
+// ratio is (7300+2200)/2200 = 4.318, so the maximum readable bus is 17.69 V.
+// A guard at 2*VBUS_V = 24 V was unreachable -- and a 24 V supply would read
+// 17.69 V, pass, and get duties computed against 17.69 for a 24 V rail: +36%
+// current with no fault. 15 V is above any healthy 3S/12 V pack and below the
+// sensor ceiling, so it can actually trip.
+constexpr float VBUS_MAX_V = 15.0f;
 constexpr float HOLD_SLEW_UP_A_PER_S   = 40.0f;  // 0.4 -> 0.9 A in ~12 ms
 constexpr float HOLD_SLEW_DOWN_A_PER_S = 5.0f;   // 0.9 -> 0.4 A in 100 ms
 

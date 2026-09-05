@@ -45,6 +45,11 @@ static volatile DQ s_teli[2] = {{0,0},{0,0}};
 // still straddle two ticks. Use focTelemetryI/U for the pairs that must match.
 static volatile float s_teltrim[2] = {1.0f, 1.0f};
 static volatile float s_teliqc[2]  = {MOTOR_HOLD_AMPS, MOTOR_HOLD_AMPS};
+// s_lq itself, published. Without this the estimator is UNOBSERVABLE: the only
+// external proxy is |ud|/(we*iq) from telemetry, and that ud is written after
+// the backstop while the estimator's is read before it -- they differ by
+// exactly the clip, which is largest when the estimate matters most.
+static volatile float s_tellq[2]   = {PHASE_LQ, PHASE_LQ};
 static PIState s_pid[2], s_piq[2];
 static float   s_lq[2] = {PHASE_LQ, PHASE_LQ};  // online Lq, tracks saturation
 // Saturation trim on the derate, plus its two input filters. See constants.h.
@@ -59,6 +64,9 @@ static float   s_donefor[2] = {0.0f, 0.0f};   // seconds the axis has been done
 // exactly where s_lq is the only thing making the derate correct.
 static bool    s_satprev[2] = {false, false};
 static float   s_vbad[2] = {0.0f, 0.0f};  // seconds of invalid vbus
+// Latched on a vbus fault, cleared only by focEnable(). A fault is a safety
+// state with no other observability -- see motorFault().
+static volatile bool s_fault[2] = {false, false};
 static spin_lock_t* s_lock;
 static volatile int s_turn = 0; // 0 -> motor1, 1 -> motor2
 // Pre-computed duties applied at the very start of the next ISR invocation,
@@ -87,25 +95,61 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   // I2C fault can make it negative. A negative vbus inverts every clampf() in
   // piStep/inversePark and makes the backstop scale factor negative. The !(>)
   // form also rejects NaN.
+  // Latched: while faulted the axis stays de-energised regardless of what the
+  // sensor now reads, until motorEnable() clears it. Without this a single good
+  // tick falls straight through to full closed-loop drive while s_fault is
+  // still set -- so motorFault() would report a fault on a live, driving axis,
+  // and on a marginal bus every bad tick inside the leaky-decay window would
+  // re-enter the fault branch and piReset() both integrators at up to 12 kHz.
+  if (s_fault[m]) {
+    s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
+    piReset(s_pid[m]); piReset(s_piq[m]);
+    return;
+  }
   float vbus = adcExtVbus();
-  if (!(vbus > 1.0f) || vbus > 2.0f * VBUS_V) {
+  if (!(vbus > 1.0f) || vbus > VBUS_MAX_V || adcExtVbusStale()) {
     // Substituting VBUS_V indefinitely would drive blind on an ASSUMED rail --
     // worse than not driving, because duties are u/VBUS_V and a real rail above
-    // that lands proportionally more current. adcExtVbus() reads 0.0 until the
-    // first ADS1015 sequence completes and has no validity flag, so allow a
-    // short startup window and then refuse. The upper clamp catches an I2C
-    // glitch reading absurdly high, which would otherwise wind both PI
-    // integrators to that value through piStep's out_limit.
+    // that lands proportionally more current.
+    //
+    // NOTE the range test alone catches only GROSS faults: adcExtInit() seeds
+    // s_vbus to VBUS_V, so a bus that never enumerates reads 12.0 and passes,
+    // and a hung I2C transfer freezes the cache at its last good value, which
+    // also passes. adcExtVbusStale(), in the condition above, is what detects
+    // those -- it is timestamp-based so it stays valid through a hang.
     if (s_vbad[m] < VBUS_FAULT_S) {
       s_vbad[m] += CTRL_DT;
       vbus = VBUS_V;
     } else {
       s_next_a[m] = 0.0f; s_next_b[m] = 0.0f;
       piReset(s_pid[m]); piReset(s_piq[m]);
+      // Do NOT rewind ticks. focEnable(false) rewinds because the CALLER
+      // asked to stop and will re-issue the move; a transient bus dip is not a
+      // caller decision, and profiles are RELATIVE with theta_mech untouched,
+      // so ticks = 0 here would replay the whole move from wherever it had got
+      // to -- travelling the distance twice while motorProgress() reported a
+      // normal completion. Latch a fault instead and let the caller decide.
+      //
+      // Publish ALL the telemetry, not some of it: leaving s_telu/s_teli stale
+      // means motorVoltageD/Q and motorCurrentD/Q keep reporting pre-fault
+      // values, and those are exactly the getters that would reveal a dead axis.
+      uint32_t firq = spin_lock_blocking(s_lock);
+      s_fault[m] = true;
+      s_teltrim[m] = 1.0f; s_teliqc[m] = MOTOR_HOLD_AMPS; s_tellq[m] = s_lq[m];
+      s_tel[m].a = i.a;   s_tel[m].b = i.b;
+      s_telu[m].d = 0.0f; s_telu[m].q = 0.0f;
+      s_teli[m].d = 0.0f; s_teli[m].q = 0.0f;
+      spin_unlock(s_lock, firq);
+      s_trim[m] = 1.0f; s_sat[m] = 0.0f; s_satprev[m] = false;
+      s_iqcmd[m] = MOTOR_HOLD_AMPS;
       return;
     }
   } else {
-    s_vbad[m] = 0.0f;
+    // Leaky, not a full reset: an intermittent bus that reads valid one tick
+    // in a thousand would otherwise get an unlimited series of fresh 250 ms
+    // windows driving on the ASSUMED rail, which is the opposite of the intent.
+    s_vbad[m] -= 4.0f * CTRL_DT;
+    if (s_vbad[m] < 0.0f) s_vbad[m] = 0.0f;
   }
 
   uint32_t irq = spin_lock_blocking(s_lock);
@@ -152,10 +196,18 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // Gate on st.done rather than on vel, so a move that passes through zero
     // velocity mid-sequence does not drop current at the worst moment.
     if (s_sp[m].cruise) {
-      holding = fabsf(s_sp[m].cruise_vel) < 1e-3f;
+      // HOLD_VEL_RAD_S, not 1e-3: a creep command of a few mrad/s is
+      // mechanically standstill but would otherwise run at MOTOR_AMPS forever
+      // -- a one-call path straight through the thermal argument for 0.9 A,
+      // which depends on standstill dropping to the hold current.
+      holding = fabsf(s_sp[m].cruise_vel) < HOLD_VEL_RAD_S;
       s_donefor[m] = 0.0f;
     } else {
-      s_donefor[m] = st.done ? (s_donefor[m] + CTRL_DT) : 0.0f;
+      // Capped, not free-running: an unbounded sum of CTRL_DT stops advancing
+      // once its ulp exceeds the increment (~23 min), the same float-summation
+      // trap this file guards against for cruise position and TICKS_MAX.
+      if (!st.done) s_donefor[m] = 0.0f;
+      else if (s_donefor[m] < HOLD_DWELL_S) s_donefor[m] += CTRL_DT;
       holding = s_donefor[m] >= HOLD_DWELL_S;
     }
     // Integrate the COMMANDED angle instead of driving it from st.pos: at
@@ -164,8 +216,14 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // revolution keeps the integral small and is exact, because POLE_PAIRS is
     // an integer and so the electrical angle is untouched by the wrap.
     float th = theta + vel * CTRL_DT;
-    while (th >= TWO_PI_F) th -= TWO_PI_F;
-    while (th < 0.0f) th += TWO_PI_F;
+    // fmodf, not a subtract loop. `th -= TWO_PI_F` is a no-op in float above
+    // 2^24*2pi, so a large-but-finite velocity (isfinite passes 1e30) would
+    // spin here forever and hang core1 -- and between ~7.5e4 and 1.3e12 rad/s
+    // it stalls the ISR proportionally. Keep theta on a NaN rather than
+    // teleporting the field to 0.
+    if (!std::isfinite(th)) th = theta;
+    th = fmodf(th, TWO_PI_F);
+    if (th < 0.0f) th += TWO_PI_F;
     s_sp[m].theta_mech = th;  // for the NEXT tick
   }
   spin_unlock(s_lock, irq);
@@ -179,8 +237,14 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // Ld from the magnet flux that has not been measured yet.
     s_lq[m] = PHASE_LQ;
     s_trim[m] = 1.0f; s_sat[m] = 0.0f;
-    s_donefor[m] = 0.0f; s_satprev[m] = false;
-    s_teltrim[m] = 1.0f; s_teliqc[m] = MOTOR_HOLD_AMPS;
+    // Pre-charged, NOT zero. focEnable() promotes a never-profiled axis to an
+    // empty profile that is done from t=0, so a zeroed dwell counter means
+    // holding stays FALSE for HOLD_DWELL_S and the axis energises at
+    // MOTOR_AMPS for 250 ms -- the exact 2.25x snap the reset below prevents,
+    // reintroduced by the dwell. Pre-charging makes a fresh enable hold at
+    // once; the dwell then only delays the hold after a move that really ran.
+    s_donefor[m] = HOLD_DWELL_S; s_satprev[m] = false;
+    s_teltrim[m] = 1.0f; s_teliqc[m] = MOTOR_HOLD_AMPS; s_tellq[m] = PHASE_LQ;
     // Hold, not MOTOR_AMPS: focEnable() promotes an axis with no profile to a
     // standstill hold, so starting at MOTOR_AMPS energises at 0.9 A and decays
     // -- a 2.25x torque snap at exactly the moment callers try to make gentle.
@@ -198,8 +262,13 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // profile resumes with a 30% cut for the ~300 ms the up-rate needs.
     // Published too: these paths return before the normal telemetry write, so
     // without this the getters report the last profile's values indefinitely.
-    s_trim[m] = 1.0f; s_sat[m] = 0.0f; s_iqcmd[m] = MOTOR_HOLD_AMPS;
-    s_teltrim[m] = 1.0f; s_teliqc[m] = MOTOR_HOLD_AMPS;
+    // Reset on entering a bypass mode because the plant the trim learned about
+    // is no longer the one being driven. Deliberately NOT reset on
+    // PROFILE->PROFILE: consecutive legs run the same plant, so carrying the
+    // trim over is correct and re-learning would cost the start of every leg.
+    s_trim[m] = 1.0f; s_sat[m] = 0.0f; s_satprev[m] = false;
+    s_donefor[m] = HOLD_DWELL_S; s_iqcmd[m] = MOTOR_HOLD_AMPS;
+    s_teltrim[m] = 1.0f; s_teliqc[m] = MOTOR_HOLD_AMPS; s_tellq[m] = s_lq[m];
     auto clamp1 = [](float x){ return x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x); };
     s_next_a[m] = clamp1(va_duty);
     s_next_b[m] = clamp1(vb_duty);
@@ -220,7 +289,8 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // Open-loop: uq is commanded directly in volts, ud=0, PI not touched.
     ud = 0.0f;
     uq = uq_cmd;
-    s_trim[m] = 1.0f; s_sat[m] = 0.0f; s_iqcmd[m] = MOTOR_HOLD_AMPS;
+    s_trim[m] = 1.0f; s_sat[m] = 0.0f; s_satprev[m] = false;
+    s_donefor[m] = HOLD_DWELL_S; s_iqcmd[m] = MOTOR_HOLD_AMPS;
   } else {
     DQ dq = park(i, theta_e);
     i_dq = dq;
@@ -250,11 +320,17 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
       // Measured on hardware: targeting 0.85 of the bus actually delivered
       // 0.995 and sat pinned at the backstop.
       // Feedforward from speed (fast, tracks the ramp with no lag because we
-      // is the COMMANDED velocity), scaled by the trim (slow, corrects what
-      // the model cannot see). A pure trim could not do this alone: a 0.25 s
-      // ramp to 600 RPM needs iq_max tracked at ~5 A/s, which a plain
-      // integrator only manages with a ~10 ms loop -- fast enough to fight the
-      // 83 ms s_lq filter upstream of it.
+      // is the COMMANDED velocity), scaled by the trim. A pure trim could not
+      // track the ramp alone: 0.25 s to 600 RPM needs ~5 A/s.
+      //
+      // CAUTION: the two adaptive loops are NOT cleanly separated in time, and
+      // the trim is faster in one direction only -- down covers its band in
+      // 25 ms against the s_lq filter's 83 ms, but up takes 300 ms, i.e. 3.6x
+      // SLOWER. So the trim can chase and partially cancel an s_lq correction
+      // on the way down and then lag it on the way back. Tolerable only because
+      // the feedforward now uses s_lq (see below), which removed the structural
+      // saturation that was driving the trim continuously. Revisit if the trim
+      // is ever observed working all the time again.
       float iq_max = (UD_FRAC * vbus) / (we_mag * s_lq[m]) * s_trim[m];
       if (iq_max < IQ_MIN) iq_max = IQ_MIN;
       if (iq_eff >  iq_max) iq_eff =  iq_max;
@@ -279,7 +355,16 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // 690 RPM. Measured on hardware the ceiling dropped from 690 to 550 RPM.
     // The command has no such path. id_cmd is always 0, so only the d-axis
     // term survives.
-    ud -= DECOUPLE_FRAC * we * PHASE_LQ * iq_eff;
+    // s_lq, NOT PHASE_LQ. The derate sizes iq_eff using s_lq, so multiplying
+    // that same iq_eff by the seed constant here makes the feedforward exceed
+    // the derate's own budget by the ratio PHASE_LQ/s_lq. Measured: s_lq
+    // converges near 6.0 mH against an 8.28 mH seed, so at the derate corner
+    // the feedforward ALONE demanded ~37% more than the bus -- the backstop
+    // then fired structurally on every tick above the corner, independent of
+    // load, sag or temperature. That in turn held the trim down and, via the
+    // saturation gate below, locked the estimator out of the regime it exists
+    // for. Two consumers of the same quantity cannot disagree by 37%.
+    ud -= DECOUPLE_FRAC * we * s_lq[m] * iq_eff;
 
     // Online Lq, from the voltage the loop DEMANDS before any clipping.
     // Holding id at 0 against a current vector rotating at we requires
@@ -295,9 +380,29 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // with DECOUPLE_FRAC = 1 the feedforward carries the speed term so ud_pi is
     // normally small, and this only fires if the model is badly wrong.
     if (we_mag > 1.0f && fabsf(dq.q) > LQ_EST_MIN_IQ &&
-        fabsf(ud_pi) < 0.98f * vbus && !s_satprev[m]) {
+        fabsf(ud_pi) < 0.98f * vbus) {
       float lq_obs = fabsf(ud) / (we_mag * fabsf(dq.q));
-      if (lq_obs > PHASE_LD && lq_obs < 4.0f * PHASE_LQ)
+      // The gate is on |id|, and ONLY on |id|. This estimator's derivation --
+      // holding id at 0 against a rotating current vector requires exactly
+      // ud = -we*Lq*iq -- is valid only WHEN id ACTUALLY IS 0. Every latch this
+      // loop has suffered came from learning while it was not:
+      //
+      //   - gating on the backstop alone strands s_lq LOW: a too-low s_lq
+      //     over-permits iq_max, saturates, closes the gate, and cannot recover;
+      //   - "escaping" that by admitting upward corrections during saturation
+      //     strands it HIGH, which is worse. ud here is PRE-clip (the backstop
+      //     is below), so during saturation the numerator is the inflated
+      //     demand while dq.q is the depressed actual current -- BOTH push
+      //     lq_obs up. On a desynchronised axis that reads ~26 mH, ratchets
+      //     s_lq there in ~83 ms, and collapses iq_max to 14% of command.
+      //
+      // Requiring id ~ 0 rejects both cases at the source, and makes the
+      // backstop condition redundant. NOTE this is the one place |id| IS the
+      // right signal: constants.h rejects it as a TRIM trigger, where it is
+      // ambiguous between saturation and loss of sync. Here the algebra itself
+      // assumes id = 0, so "is id 0?" is precisely the validity question.
+      if (lq_obs > PHASE_LD && lq_obs < 4.0f * PHASE_LQ &&
+          fabsf(dq.d) < LQ_EST_MAX_ID)
         s_lq[m] += LQ_ALPHA * (lq_obs - s_lq[m]);
     }
 
@@ -338,11 +443,22 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
     // to stall drove |id| to 0.22 A and pinned this trim at its floor for
     // 1.25 s, deepening the stall it was reacting to.
     //
-    // The backstop has no such ambiguity. A stalled rotor generates no
-    // back-EMF, so its voltage demand is only R*I -- the backstop cannot fire
-    // on a stall, and fires only on genuine voltage saturation.
+    // The backstop is unambiguous about SATURATION, but it does NOT by itself
+    // distinguish a stall. An earlier version of this comment claimed "a
+    // stalled rotor generates no back-EMF, so the backstop cannot fire on a
+    // stall" -- FALSE, and falsified by a validation log: the decoupling
+    // feedforward is driven by the COMMANDED we and injects ~8.6 V whether or
+    // not the rotor turns, so on an open-circuit axis the backstop fired
+    // continuously and pinned this trim at its floor while the axis made no
+    // torque. That is the "cutting current during a stall deepens it" failure
+    // the trigger change was supposed to prevent.
     //
-    if (s_sat[m] > SAT_TRIP) {
+    // Hence the conduction gate below: only cut when the axis is actually
+    // carrying the current we asked for. A stalled or open axis is not
+    // voltage-limited, it is broken, and less current cannot help it.
+    //
+    const bool conducting = fabsf(i_dq.q) > 0.5f * fabsf(iq_eff);
+    if (s_sat[m] > SAT_TRIP && conducting) {
       s_trim[m] -= TRIM_DOWN_RATE * dt *
                    ((s_sat[m] - SAT_TRIP) / (1.0f - SAT_TRIP));
     } else if (s_sat[m] < SAT_CLEAR) {
@@ -365,7 +481,7 @@ static void __not_in_flash_func(controlStep)(Motor m, AB i) {
   uint32_t irq2 = spin_lock_blocking(s_lock);
   s_telu[m].d = ud;      s_telu[m].q = uq;
   s_teli[m].d = i_dq.d;  s_teli[m].q = i_dq.q;
-  s_teltrim[m] = s_trim[m];  s_teliqc[m] = s_iqcmd[m];
+  s_teltrim[m] = s_trim[m];  s_teliqc[m] = s_iqcmd[m];  s_tellq[m] = s_lq[m];
   spin_unlock(s_lock, irq2);
 }
 
@@ -416,6 +532,7 @@ void focEnable(Motor m, bool enable) {
   // angle. That is the same path the ISR already takes once a move finishes,
   // not a new mode. The first focSetProfile()/focSetVelocity()/focSetVoltage*()
   // overwrites this, so a caller that enables before commanding is unaffected.
+  if (enable) s_fault[m] = false;
   if (enable && s_sp[m].mode == MODE_OFF) {
     s_sp[m].mode   = MODE_PROFILE;
     s_sp[m].prof   = Profile();
@@ -449,6 +566,7 @@ void focSetProfile(Motor m, const Profile& p) {
 }
 
 void focSetVelocity(Motor m, float vel_rad_s) {
+  if (!std::isfinite(vel_rad_s)) return;
   uint32_t irq = spin_lock_blocking(s_lock);
   s_sp[m].mode = MODE_PROFILE;
   s_sp[m].prof = Profile();
@@ -460,6 +578,7 @@ void focSetVelocity(Motor m, float vel_rad_s) {
 }
 
 void focSetVoltage(Motor m, float theta_mech, float uq_volts) {
+  if (!std::isfinite(theta_mech) || !std::isfinite(uq_volts)) return;
   uint32_t irq = spin_lock_blocking(s_lock);
   s_sp[m].mode = MODE_VOLTAGE;
   s_sp[m].theta_mech = theta_mech;
@@ -468,6 +587,7 @@ void focSetVoltage(Motor m, float theta_mech, float uq_volts) {
 }
 
 void focSetVoltageAB(Motor m, float va_duty, float vb_duty) {
+  if (!std::isfinite(va_duty) || !std::isfinite(vb_duty)) return;
   uint32_t irq = spin_lock_blocking(s_lock);
   s_sp[m].mode = MODE_AB;
   s_sp[m].va_duty = va_duty;
@@ -513,6 +633,20 @@ float focDerateTrim(Motor m) {
 float focCurrentCmd(Motor m) {
   uint32_t irq = spin_lock_blocking(s_lock);
   float v = s_teliqc[m];
+  spin_unlock(s_lock, irq);
+  return v;
+}
+
+bool focFault(Motor m) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  bool v = s_fault[m];
+  spin_unlock(s_lock, irq);
+  return v;
+}
+
+float focLqEstimate(Motor m) {
+  uint32_t irq = spin_lock_blocking(s_lock);
+  float v = s_tellq[m];
   spin_unlock(s_lock, irq);
   return v;
 }

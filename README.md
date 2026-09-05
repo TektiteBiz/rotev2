@@ -274,7 +274,12 @@ ProfileState motorProgress(Motor m);
 
 - **`motorEnable(m)`** — releases the driver's nSLEEP and lets the axis drive current. The axis
   then **holds position** even if it has never been given a profile: it is energised at standstill
-  and resists being turned by hand, drawing the same `MOTOR_AMPS` a finished move holds at. There
+  and resists being turned by hand. Standstill draws `MOTOR_HOLD_AMPS` (0.4 A), **not** the
+  `MOTOR_AMPS` (0.9 A) a move uses — holding torque is therefore about 44% of moving torque.
+  **If your application holds a load at standstill (a grade, a spring, a gripper, an arm), verify
+  it still holds before updating: there is no position sensor, so a backdriven axis loses position
+  silently and `motorProgress()` will still report the move completing normally.** Raise
+  `MOTOR_HOLD_AMPS` in `constants.h` if your holding load needs it. There
   is no position sensor, so "position" means the commanded angle, which is 0 at boot — the first
   enable therefore pulls the rotor into alignment with electrical angle 0 rather than holding
   wherever it physically sits. `motorEnable(m, false)` zeroes the current and puts the driver back

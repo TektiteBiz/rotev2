@@ -17,5 +17,6 @@ float motorVoltageD(Motor m);
 float motorVoltageQ(Motor m);
 float motorDerateTrim(Motor m);  // 1.0 = feedforward untrimmed, <1 = riding the voltage limit
 float motorCurrentCmd(Motor m);  // commanded iq after the move/hold slew
+float motorLqEstimate(Motor m);  // the s_lq the derate is actually using, H
 
 }  // namespace rotev

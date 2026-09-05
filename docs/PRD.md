@@ -85,7 +85,7 @@ High frequency FOC will be implemented and run. The specifications are:
   it integrates to is the S curve. It is constructible from distance plus max
   velocity and acceleration, from distance plus a target time and acceleration,
   or by scaling an existing profile's distance or time.
-- Current is fixed internally at `MOTOR_AMPS` (0.8 A) and is not exposed.
+- Current is fixed internally at `MOTOR_AMPS` (0.9 A) for moves and `MOTOR_HOLD_AMPS` (0.4 A) at standstill. Neither is exposed.
 - The caller can read back the active profile (`motorProfile`) and its progress
   -- time, position, velocity, acceleration, done (`motorProgress`).
 - Telemetry needed for bringup and tuning: per-motor phase currents, dq
@@ -190,7 +190,7 @@ current, and ud is what consumes it:
 The only lever on ud is iq, so the correct response to running out of voltage
 is to command LESS CURRENT, not to throw torque away. Each control cycle:
 
-    iq_max = UD_FRAC * vbus / (|we| * Lq_online)      UD_FRAC = 0.85
+    iq_max = UD_FRAC * vbus / (|we| * Lq_online) * trim   UD_FRAC = 0.83
 
 This trades current for speed automatically, so the drive rides the voltage
 limit rather than falling off it, and no hand-tuned current-per-speed table is

@@ -10,6 +10,12 @@ void begin();
 void motorEnable(Motor m, bool enable = true);
 void motorSetProfile(Motor m, const Profile& p);  // starts immediately from the current position
 Profile      motorProfile(Motor m);   // the profile currently executing
+
+// True if the axis has stopped driving because the bus-voltage sense went
+// invalid or stale. LATCHED: the axis stays de-energised and the profile clock
+// stays stopped until motorEnable() clears it, so motorProgress() will never
+// report done. Poll this alongside .done or a move can hang forever.
+bool  motorFault(Motor m);
 ProfileState motorProgress(Motor m);  // where that profile is right now
 
 // --- Board I/O ---

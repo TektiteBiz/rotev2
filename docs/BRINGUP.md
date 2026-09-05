@@ -90,7 +90,7 @@ Profiles are **relative** — the distance is measured from wherever the axis is
 `motorSetProfile()` is called, and the profile clock restarts at 0. Issuing a new profile mid-move
 abandons the old one from the current position rather than queueing behind it.
 
-Current is fixed at `MOTOR_AMPS` (0.8 A) for every closed-loop move and is not a knob. The
+Current is `MOTOR_AMPS` (0.9 A) for every closed-loop move and `MOTOR_HOLD_AMPS` (0.4 A) at standstill; neither is a knob. The
 open-loop bringup phases command a voltage instead, so they set their own operating current
 through Ohm's law.
 
@@ -269,7 +269,7 @@ f_electrical = 1700 RPM * 50 / 60 = 1417 Hz
 ```
 
 which is the most demanding steady operating point the board sees. Current is fixed at
-`MOTOR_AMPS` (0.8 A) and the voltage-limited derate is what keeps it there — at speed the drive
+`MOTOR_AMPS` (0.9 A for moves; `MOTOR_HOLD_AMPS` = 0.4 A at standstill) and the voltage-limited derate is what keeps it there — at speed the drive
 runs out of `ud = -we*Lq*iq` long before `uq`, so the derate trades current for speed rather than
 letting the axis fall off the voltage limit.
 
@@ -287,7 +287,7 @@ cd bringup && pio run -e phase3 -t upload && pio device monitor
 A small periodic print: profile time, each axis's commanded RPM, electrical degrees per control
 step, bus voltage, and per-axis d/q currents and voltages. Watch for:
 
-- `id` regulated near zero; `iq` near the 0.8 A command and falling once the `UD_FRAC` derate
+- `id` regulated near zero; `iq` near the 0.9 A command and falling once the `UD_FRAC` derate
   engages; `|ud|` riding just under its share of the bus once the axis is at speed.
 - `degEStep` staying well under 90 (a quarter electrical cycle) — above roughly 20 degrees per
   step the current cannot look like a sine no matter how much voltage headroom there is.
@@ -315,7 +315,7 @@ On GPIO10, confirm the timing budget is still met at 1417 Hz electrical.
 | Motor pulls out (loses sync) partway up the ramp | Lengthen the profile's accel time — `Profile::scaleTime()` on the phase's profile, or a lower `max_accel`; check bus sag |
 | Noisy current signals causing instability | `OVERSAMPLE` — raise (watch timing budget); also check for ground loops on SOA/SOB |
 | ADC sampling hits a switching edge (spikes on current traces) | `SAMPLE-INSTANT` — shift the ADC burst offset in `src/foc.cpp` `controlStep` toward the PWM center |
-| Motor stalls under load | `MOTOR_AMPS` — the fixed 0.8 A command; verify the hardware limit before raising |
+| Motor stalls under load | `MOTOR_AMPS` — the fixed 0.9 A command; verify the hardware limit before raising |
 
 ---
 
@@ -390,7 +390,7 @@ cd bringup && pio run -e phase5 -t upload && pio device monitor
 Expect R² 0.998+ on the Ld step response and 0.999+ on the Lq sweep; a poor fit means the stage
 did not hold its operating point, not that the motor is unusual.
 
-The Lq sweep runs at `MOTOR_AMPS` (0.8 A), the same fixed current every closed-loop move uses. Its
+The Lq sweep runs at `MOTOR_AMPS` (0.9 A), the same current every closed-loop move uses. NOTE the checked-in PHASE_LQ was characterised at 0.5 A, not at MOTOR_AMPS. Its
 speed points are chosen against the pull-out ceiling at that current — roughly `rpm * iq ~ 280` on
 a 12 V bus — so raising them without lowering the current will pull the rotor out mid-sweep and
 poison the fit.
@@ -409,9 +409,9 @@ library is structural code that should not be changed without a design review.
 | `SAMPLE-INSTANT` | ADC burst placement in `controlStep` | `src/foc.cpp` `controlStep()` | Wrap-aligned (start of ISR) | Current spikes on scope indicate sampling lands on switching edge — shift the burst call toward PWM center |
 | `KP` / `KI` | `KP_D`, `KP_Q`, `KI` (derived from `BANDWIDTH * PHASE_LD/LQ/R`) | `src/constants.h` | `3.79` / `8.28` / `4042` | Oscillation → lower; sluggish tracking → raise; adjust via `BANDWIDTH` and let the `constexpr` derivation recompute both axes |
 | `BANDWIDTH` | `BANDWIDTH` | `src/constants.h` | `1000` (rad/s) | Primary knob for PI response speed; change this and `KP_D`/`KP_Q`/`KI` follow automatically |
-| `MOTOR_AMPS` | `MOTOR_AMPS` | `src/constants.h` | `0.8` A | Fixed q-axis current for every closed-loop move, and not exposed to the API. Lower it to buy top speed (`rpm * iq ~ 280` on a 12 V bus), raise it for torque at the cost of that ceiling |
+| `MOTOR_AMPS` | `MOTOR_AMPS` | `src/constants.h` | `0.9` A | Fixed q-axis current for every closed-loop move, and not exposed to the API. Lower it to buy top speed (`rpm * iq ~ 280` on a 12 V bus), raise it for torque at the cost of that ceiling |
 | `DECOUPLE_FRAC` | `DECOUPLE_FRAC` | `src/constants.h` | `1.0` | Cross-coupling feedforward strength; set `0.0` to A/B test whether it helps this machine |
-| `IMAX_A` | `IMAX_A` | `src/constants.h` | `1.1` A | Current sense full-scale range; changes only if the shunt or amplifier gain does. Not a command clamp — the command is the fixed `MOTOR_AMPS` |
+| `IMAX_A` | `IMAX_A` | `src/constants.h` | `1.1` A | Current sense full-scale range; changes only if the shunt or amplifier gain does. **Documentation only — nothing in `src/` reads it and there is no clamp.** The command is the fixed `MOTOR_AMPS` |
 | `ADC_VREF` | `ADC_VREF` | `src/constants.h` | `3.3` V | Measured ADC reference differs from 3.3 V (use a multimeter on the AVDD pin) |
 | `VBUS_V` | `VBUS_V` | `src/constants.h` | `12.0` V | Startup fallback only — the live bus comes from the ADS1015. Update if the supply is not 12 V |
 | `ISENSE-SIGN` | Swap `ADC_SOA_*`/`ADC_SOB_*` channels or negate | `src/adc.cpp` `adcSampleMotor()` | As wired (SOA = phase A, SOB = phase B) | Current polarity inverted vs. expectation from Phase 1 |
@@ -424,7 +424,7 @@ library is structural code that should not be changed without a design review.
 
 The INA181A2 has a gain of 50 and the shunt is 30 mΩ, giving 1.5 V/A sensitivity. The ADC
 reference is 3.3 V and the INA output is biased at 1.65 V (ISENSE_REF_V), so the usable range is
-approximately ±1.1 A. The internal current command is clamped to that, well above the 0.8 A
+approximately ±1.1 A. **Nothing in the firmware clamps to it** — the command is the fixed 0.9 A
 `MOTOR_AMPS` every closed-loop move actually uses. If you need a higher current range you must
 change the shunt resistor and update `SHUNT_OHMS`, `IMAX_A`, and `ISENSE_REF_V` in
 `src/constants.h`.
