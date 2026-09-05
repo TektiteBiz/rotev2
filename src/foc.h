@@ -20,5 +20,7 @@ ProfileState focProgress(Motor m);
 AB focTelemetry(Motor m);    // measured phase currents
 DQ focTelemetryU(Motor m);   // applied dq voltage, post-clamp
 DQ focTelemetryI(Motor m);   // measured dq current
+float focDerateTrim(Motor m);  // saturation trim on the derate, 1.0 = no cut
+float focCurrentCmd(Motor m);  // slewed q-axis current command (move vs hold)
 
 }  // namespace rotev

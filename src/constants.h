@@ -42,10 +42,31 @@ constexpr float PHASE_R  = 4.0417f;     // ohms, mean of 2 (datasheet: 3.5)
 constexpr float PHASE_LD = 0.0037946f;  // H, mean of 2 (datasheet: 3.5 mH)
 constexpr float PHASE_LQ = 0.0082764f;  // H, mean of 2 -- sets ud at speed
 
-// Fixed q-axis current for every closed-loop (profile) move. Not exposed:
-// the trade above makes current a tuning knob for the drive, not for the
-// user, and 0.8 A leaves headroom to 1700 RPM after the derate.
-constexpr float MOTOR_AMPS = 0.8f;
+// Fixed q-axis current for every closed-loop (profile) MOVE. Not exposed: the
+// trade above makes current a tuning knob for the drive, not for the user.
+// Standstill uses MOTOR_HOLD_AMPS instead -- see below.
+//
+// 0.9 A is bounded by TOUCH TEMPERATURE, not by the motor. Dissipation is
+// |i|^2 * R_winding (sinusoidal drive: the two phases carry cos and sin, so
+// the sum of squares is constant -- NOT 2*|i|^2*R).
+//
+// R_winding is NOT PHASE_R. PHASE_R = 4.0417 is winding + Rds(on) + shunt, and
+// the driver's ~0.23 ohm share heats the PCB, not the motor. Winding alone is
+// ~3.81 ohm (PHASE_R minus the ~0.23 ohm driver share), vs 3.5 datasheet cold
+// value. Using the datasheet 3.5 here UNDERSTATES motor heating by 9%.
+//
+// At 3.81 ohm: 0.9 A -> 3.09 W -> ~50 C surface at 25 C ambient, which is
+// slightly OVER the ~48 C IEC 62368-1 prolonged-contact limit for metal.
+// 0.85 A would land on it. This is only acceptable because the standstill hold
+// below cuts the AVERAGE well under the limit -- a continuous-motion duty cycle
+// would not be covered. MEASURE the surface before shipping; the thermal
+// resistance here is a datasheet figure, and mounting dominates it.
+//
+// Also note the current sense: the INA181 specifies gain error only for
+// V_OUT in [0.5, V_S-0.5], which at 1.5 V/A is +-0.767 A. 0.9 A is outside
+// that window, so gain error at the current peaks is unspecified -- it shows
+// up as waveform distortion, i.e. torque ripple. Fix that before going higher.
+constexpr float MOTOR_AMPS = 0.9f;
 
 // --- Control (PI pole placement, per axis) ---
 // Each axis places its controller zero on its own plant pole: the d-axis
@@ -63,8 +84,117 @@ constexpr float KI   = BANDWIDTH * PHASE_R;  // 4042
 // the bus the right answer is to command less current, not to throw away
 // torque: that lets the drive ride the voltage limit instead of falling off
 // it. See foc.cpp for why the limit is computed from speed, not measured ud.
-constexpr float UD_FRAC = 0.85f;    // of the bus that ud may consume
+// UD_FRAC is the FEEDFORWARD half of the limiter. It is derived, not guessed:
+// ud and uq add in QUADRATURE, so the real constraint is |u| <= k*vbus, i.e.
+//        UD_FRAC <= sqrt(k^2 - (R*I/vbus)^2)
+// Reserving k = 0.95 for PI control authority, the worst point is the derate
+// corner (full MOTOR_AMPS, so the largest uq = R*I): that gives 0.91, rising
+// to 0.95 at 600 RPM where the derate has cut I and uq with it. 0.91 is the
+// safe value across the range. The previous 0.85 was a flat linear reserve
+// applied to a quadratic constraint, which stranded 11-15% of the bus above
+// the corner -- and was simultaneously too SMALL at the corner, surviving only
+// because of the quadrature addition.
+// NOTE the two R's. For the VOLTAGE budget the right R is the full series
+// PHASE_R (4.0417) -- winding + Rds(on) + shunt all drop volts. For the THERMAL
+// budget below it is the WINDING alone, since the driver's share heats the PCB.
+// The reserve is for uq, so it must be sized against the uq that actually
+// occurs -- and uq is NOT R*I. MEASURED on hardware above 400 RPM: uq mean
+// 4.83 V, max 7.29 V, against an R*I model value of 2.74 V. The model
+// understates by ~2 V because uq also carries we*lam*sin(gamma), the
+// load-angle term, which the no-load model omits entirely.
+//
+//     UD_FRAC <= sqrt(k^2 - (uq/vbus)^2),  k = 0.95 for PI authority
+//   at 10.5 V:  R*I model -> 0.913   measured mean -> 0.831   max -> 0.648
+//
+// 0.83 is sized on the measured mean, leaving the trim to absorb excursions
+// toward the max. The earlier 0.88/0.91 were derived from the R*I model and
+// were therefore over-committed: on the validation run the backstop fired
+// often enough to hold the trim below 1.0 for 56% of the move.
+//
+// A fixed fraction is still the wrong shape here -- the right budget is
+// sqrt((k*vbus)^2 - uq^2) using the MEASURED uq from the previous tick, which
+// needs no constant at all. Left as future work: it closes a loop through the
+// load angle and wants bench time before it ships.
+constexpr float UD_FRAC = 0.83f;    // of the bus that ud may consume
 constexpr float IQ_MIN = 0.05f;     // floor on the derated current command
+
+// --- Saturation trim (the FEEDBACK half of the limiter) ---
+// The feedforward above knows speed but nothing else: not load angle, vehicle
+// mass, grade, battery sag, winding temperature, or per-unit R spread (the
+// datasheet allows R +-10%, L +-20%, and per-unit constants are not an option
+// on a fleet). The trim closes that gap by riding the ACTUAL voltage limit.
+//
+// Trigger: loss of d-axis regulation. The PI holds id at 0 until the bus runs
+// out; then the |u| backstop scales ud down, the d-axis loop cannot get the
+// voltage it asked for, and id drifts. That is what saturation looks like from
+// inside the loop, and it is independent of WHY the bus ran out.
+//
+// This is NOT the feedback derate rejected in PRD.md: that one scaled by
+// (ud_lim/|ud|), and piStep already clamps to +-vbus so the ratio could never
+// drop below UD_FRAC -- structurally blind. id has no such ceiling; the
+// further over budget you are, the larger the signal.
+//
+// Hysteresis, not sluggishness, is what prevents limit-cycling -- so recovery
+// can be fast (~300 ms) instead of the seconds a plain integrator would need.
+// A whole profile is 10-20 s, so a 2 s recovery would waste a fifth of a move.
+constexpr float TRIM_MIN       = 0.70f;  // trim only ever cuts, never boosts
+// PROPORTIONAL to how far over SAT_TRIP the duty is, not a fixed rate. With a
+// fixed 12/s the 10 ms filter takes ~11 ms to decay back under the trip point
+// even if the cause vanishes instantly, so the MINIMUM possible cut was 0.13 --
+// 43% of the whole band -- and the loop limit-cycled at ~6 Hz. Proportional
+// action self-limits: a marginal trip makes a marginal cut.
+constexpr float TRIM_DOWN_RATE = 12.0f;  // /s at full saturation duty
+constexpr float TRIM_UP_RATE   = 1.0f;   // /s -- full band in ~300 ms
+constexpr float SAT_TRIP       = 0.10f;  // backstop duty above this -> cut
+constexpr float SAT_CLEAR      = 0.02f;  // and below this (AND id clear) -> recover
+// 0.05 A matches ID_TOL, the off-zero threshold phase 5 already found workable.
+// It sits above the sense noise floor (~20-50 mA: 9.2 ENOB ADC + INA offset)
+// and above the ~1 ms cross-coupling kick the d-axis loop takes after a fast
+// iq change, which the filter below rejects.
+// |id| is deliberately NOT a derate trigger -- see foc.cpp. It rises on loss
+// of sync as well as on voltage saturation, and cutting current during a stall
+// deepens it. Callers wanting a sync check should read motorCurrentD().
+// The s_lq estimator's own validity floor. Was sharing IQ_MIN, which silently
+// coupled it to the derate floor; they are unrelated quantities.
+constexpr float LQ_EST_MIN_IQ  = 0.05f;
+// The estimator's own backstop-duty ceiling. Numerically equal to SAT_CLEAR
+// today, but they are different questions -- "is it safe to learn from this
+// tick" vs "is it safe to give current back" -- and sharing a constant would
+// silently couple them, which is the exact failure mode UNJUSTIFIED_CONSTANTS.md
+// documents for IQ_MIN.
+constexpr float LQ_EST_MAX_SAT = 0.02f;
+constexpr float SAT_FILT_TAU_S = 0.010f; // 10 ms on backstop duty
+
+// --- Standstill hold ---
+// focEnable() promotes an axis with no profile to a standstill hold, and a
+// finished move holds too, so without this the motor burns full MOTOR_AMPS
+// while parked -- which on a robot is most of the duty cycle. Holding only has
+// to beat detent plus drivetrain friction (plus any grade you must hold on),
+// which is far less than moving torque.
+//
+// This is a TOUCH-TEMPERATURE product: dissipation is |i|^2 * R_winding, so
+// 0.8 A is 2.47 W and ~45 C surface at 25 C ambient, already close to the
+// ~48 C IEC 62368-1 prolonged-contact limit for metal. Cutting the hold to
+// 0.4 A drops hold dissipation 4x and is what buys back the thermal budget.
+// Tune DOWN until the axis backdrives under your worst holding load.
+constexpr float MOTOR_HOLD_AMPS   = 0.4f;
+// ASYMMETRIC on purpose. Slewing DOWN into the hold can be gentle -- nothing
+// needs the torque. Slewing UP must be fast, because it happens at the START
+// of a move, which is exactly when peak acceleration torque is demanded.
+// Measured on hardware with a symmetric 5 A/s: the first 150 ms of every move
+// ran at reduced current while ramping 0.4 -> 0.9 A, cutting torque during the
+// acceleration ramp. 40 A/s puts the rise inside one 12.5 ms profile segment.
+// Dwell before engaging the hold. st.done goes true the instant a leg ends,
+// so a back-to-back sequence drops the current command between legs -- measured
+// on hardware: 0.900 -> 0.567 -> 0.900 at rpm=0 between legs, a 37% torque cut
+// during a handover. Requiring the axis to be done for HOLD_DWELL_S before
+// engaging means a new profile arriving promptly never sees the hold at all.
+constexpr float HOLD_DWELL_S = 0.25f;
+// How long an invalid vbus reading may be papered over with VBUS_V before the
+// axis stops driving rather than guess at the rail.
+constexpr float VBUS_FAULT_S = 0.25f;
+constexpr float HOLD_SLEW_UP_A_PER_S   = 40.0f;  // 0.4 -> 0.9 A in ~12 ms
+constexpr float HOLD_SLEW_DOWN_A_PER_S = 5.0f;   // 0.9 -> 0.4 A in 100 ms
 
 // --- Control delay compensation ---
 // Current is sampled at the top of the ISR, the duty computed from it is
